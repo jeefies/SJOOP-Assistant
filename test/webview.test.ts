@@ -64,6 +64,8 @@ describe('Webview UI Comprehensive Automated Test Suite (JSDOM)', () => {
       assert.ok(html.includes('id="btnModeMulti"'), 'Missing btnModeMulti element');
       assert.ok(html.includes('id="btnAddSource"'), 'Missing btnAddSource element');
       assert.ok(html.includes('id="sourceFileList"'), 'Missing sourceFileList element');
+      assert.ok(html.includes('id="singleFileSection"'), 'Missing singleFileSection element');
+      assert.ok(html.includes('id="modeCard"'), 'Missing modeCard element');
       assert.ok(html.includes('id="chkMsvc"'), 'Missing chkMsvc input');
       assert.ok(html.includes('id="chkMingw"'), 'Missing chkMingw input');
       assert.ok(html.includes('id="chkLinux"'), 'Missing chkLinux input');
@@ -190,18 +192,21 @@ describe('Webview UI Comprehensive Automated Test Suite (JSDOM)', () => {
       const btnSingle = env.document.getElementById('btnModeSingle') as HTMLButtonElement;
       const btnMulti = env.document.getElementById('btnModeMulti') as HTMLButtonElement;
       const multiSection = env.document.getElementById('multiFileSection');
+      const singleSection = env.document.getElementById('singleFileSection');
 
       // Click Multi
       btnMulti.click();
       assert.strictEqual(env.getLastMessage()?.type, 'updateConfig');
       assert.strictEqual(env.getLastMessage()?.projectConfig?.mode, 'multi');
       assert.strictEqual(multiSection?.style.display, 'block');
+      assert.strictEqual(singleSection?.style.display, 'none');
 
       // Click Single
       btnSingle.click();
       assert.strictEqual(env.getLastMessage()?.type, 'updateConfig');
       assert.strictEqual(env.getLastMessage()?.projectConfig?.mode, 'single');
       assert.strictEqual(multiSection?.style.display, 'none');
+      assert.strictEqual(singleSection?.style.display, 'block');
     });
 
     it('should post addAdditionalFile when clicking add source button', async () => {
@@ -274,6 +279,9 @@ describe('Webview UI Comprehensive Automated Test Suite (JSDOM)', () => {
       const badge = env.document.getElementById('encodingBadge');
       assert.strictEqual(activeName?.textContent, 'sub.cpp');
       assert.strictEqual(badge?.textContent, 'GB18030 ✅');
+
+      const singleSection = env.document.getElementById('singleFileSection');
+      assert.strictEqual(singleSection?.style.display, 'none', 'Single file header should be hidden in multi-file mode');
 
       // Verify DOM identity is preserved (no flashing or recreation)
       assert.strictEqual(ul.children[0], initialUlItem, 'Source list DOM should NOT be recreated');

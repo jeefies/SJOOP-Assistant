@@ -718,34 +718,36 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
   </style>
 </head>
 <body>
-  <!-- Header & Encoding Guard -->
-  <div class="card" id="fileHeaderCard">
+  <!-- Mode Selection & File Context -->
+  <div class="card" id="modeCard">
     <div class="header-bar">
-      <div>
-        <strong id="activeFileName" style="font-size: 13px;">未打开 C/C++ 文件</strong>
-      </div>
-      <div id="encodingBadgeContainer" style="display: flex; gap: 6px; align-items: center;">
-        <span class="badge badge-warn" id="encodingBadge">未知编码</span>
+      <strong>模式选择</strong>
+      <div style="display: flex; gap: 6px; align-items: center;">
+        <button class="btn btn-small btn-secondary" id="btnModeSingle">单文件</button>
+        <button class="btn btn-small btn-secondary" id="btnModeMulti">多文件</button>
         <button class="btn btn-small btn-secondary" id="btnShowLogs" title="打开 SJOOP 运行日志">日志</button>
       </div>
     </div>
-    <div id="encodingAlert" style="display:none; font-size: 11px; color: #f14c4c; margin-top: 4px;">
-      ⚠️ SJ 课程强制要求 GB18030！
-      <button class="btn btn-small" id="btnConvert" style="margin-left: 6px;">转为 GB18030</button>
-    </div>
-    <div style="font-size: 10px; color: #888; margin-top: 4px;" id="systemEncText">系统默认: 检测中...</div>
-  </div>
 
-  <!-- Mode & Sources -->
-  <div class="card">
-    <div class="header-bar">
-      <strong>模式选择</strong>
-      <div>
-        <button class="btn btn-small btn-secondary" id="btnModeSingle">单文件</button>
-        <button class="btn btn-small btn-secondary" id="btnModeMulti">多文件</button>
+    <!-- Single File Section (Shown only in Single-File Mode) -->
+    <div id="singleFileSection" style="margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px;">
+      <div class="header-bar" style="margin-bottom: 4px;">
+        <div>
+          <strong id="activeFileName" style="font-size: 13px;">未打开 C/C++ 文件</strong>
+        </div>
+        <div id="encodingBadgeContainer">
+          <span class="badge badge-warn" id="encodingBadge">未知编码</span>
+        </div>
       </div>
+      <div id="encodingAlert" style="display:none; font-size: 11px; color: #f14c4c; margin-top: 4px;">
+        ⚠️ SJ 课程强制要求 GB18030！
+        <button class="btn btn-small" id="btnConvert" style="margin-left: 6px;">转为 GB18030</button>
+      </div>
+      <div style="font-size: 10px; color: #888; margin-top: 4px;" id="systemEncText">系统默认: 检测中...</div>
     </div>
-    <div id="multiFileSection" style="display: none; margin-top: 6px;">
+
+    <!-- Multi File Section (Shown only in Multi-File Mode) -->
+    <div id="multiFileSection" style="display: none; margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px;">
       <div style="font-size: 11px; color: #aaa; margin-bottom: 4px;">联合编译文件列表 (<span id="sourceFileCount">0</span>):</div>
       <ul class="source-list" id="sourceFileList"></ul>
       <button class="btn btn-small" id="btnAddSource">+ 添加 .cpp / .h 文件</button>
@@ -1019,15 +1021,17 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     function renderUI() {
-      // 1. Header & Encoding
-      renderHeaderOnly();
-
-      // 2. Mode buttons
+      // 1. Mode buttons & section visibility
       const isMulti = state.projectConfig && state.projectConfig.mode === 'multi';
       document.getElementById('btnModeSingle').className = !isMulti ? 'btn btn-small' : 'btn btn-small btn-secondary';
       document.getElementById('btnModeMulti').className = isMulti ? 'btn btn-small' : 'btn btn-small btn-secondary';
+      document.getElementById('singleFileSection').style.display = isMulti ? 'none' : 'block';
       document.getElementById('multiFileSection').style.display = isMulti ? 'block' : 'none';
 
+      // 2. Header & Encoding
+      renderHeaderOnly();
+
+      // 3. Multi-file sources
       if (isMulti) {
         const addFiles = state.projectConfig.additionalFiles || [];
         document.getElementById('sourceFileCount').textContent = addFiles.length;
