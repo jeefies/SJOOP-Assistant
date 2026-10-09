@@ -137,12 +137,18 @@ export class MsvcDriver {
         '/execution-charset:gb18030',
       ];
 
+      const cppSources = sources.filter((f) => /\.(cpp|c|cc|cxx)$/i.test(f));
+      const filesToCompile = cppSources.length > 0 ? cppSources : sources;
+      const includeDirs = [...new Set(sources.map((s) => path.dirname(s)))];
+      const includeFlags = includeDirs.map((d) => `/I${d}`);
+
       const flags = userFlags && userFlags.length > 0 ? userFlags : defaultFlags;
       const args = [
         ...flags,
+        ...includeFlags,
         `/Fe:${outExe}`,
         `/Fo:${outputDir}\\`,
-        ...sources,
+        ...filesToCompile,
       ];
 
       const proc = cp.spawn('cl.exe', args, {

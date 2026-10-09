@@ -196,13 +196,40 @@ export class LinuxSshDriver {
             });
           }
 
-          const remoteBase = `${config.remoteDir || '~/sjoop_tmp'}/${outputBaseName}`;
-          // 1. Create remote directory
+          // 0. Resolve real absolute home directory on remote Linux
+          let remoteHome = '';
+          await new Promise<void>((homeRes) => {
+            conn.exec('echo $HOME', (hErr, hStream) => {
+              if (hErr || !hStream) {
+                remoteHome = `/home/${connConfig.username}`;
+                return homeRes();
+              }
+              let out = '';
+              hStream.on('data', (d: Buffer) => (out += d.toString()));
+              hStream.on('close', () => {
+                remoteHome = out.trim() || `/home/${connConfig.username}`;
+                homeRes();
+              });
+            });
+          });
+
+          // Expand ~ in remoteDir to real absolute path
+          let rawDir = (config.remoteDir || '~/sjoop_tmp').trim();
+          if (rawDir.startsWith('~/')) {
+            rawDir = `${remoteHome}/${rawDir.substring(2)}`;
+          } else if (rawDir === '~') {
+            rawDir = remoteHome;
+          } else if (!rawDir.startsWith('/')) {
+            rawDir = `${remoteHome}/${rawDir}`;
+          }
+          const remoteBase = `${rawDir}/${outputBaseName}`;
+
+          // 1. Create remote directory with absolute path
           await new Promise<void>((res) => {
             conn.exec(`mkdir -p "${remoteBase}"`, () => res());
           });
 
-          // 2. Upload source files
+          // 2. Upload source files and headers
           const remoteFileNames: string[] = [];
           for (const localPath of sources) {
             const fileName = path.basename(localPath);
@@ -221,7 +248,10 @@ export class LinuxSshDriver {
             remoteFileNames.push(fileName);
           }
 
-          // 3. Remote Compile
+          // 3. Remote Compile (filter .cpp files for compiler invocation)
+          const cppFileNames = remoteFileNames.filter((f) => /\.(cpp|c|cc|cxx)$/i.test(f));
+          const filesToCompile = cppFileNames.length > 0 ? cppFileNames : remoteFileNames;
+
           const defaultFlags = [
             '-Wall',
             '-std=c++20',
@@ -230,7 +260,7 @@ export class LinuxSshDriver {
           ];
           const flags = config.flags && config.flags.length > 0 ? config.flags : defaultFlags;
           const remoteBin = `${remoteBase}/${outputBaseName}_linux`;
-          const compileCmd = `cd "${remoteBase}" && c++ ${flags.join(' ')} -o "${remoteBin}" ${remoteFileNames.join(' ')}`;
+          const compileCmd = `cd "${remoteBase}" && c++ ${flags.join(' ')} -o "${remoteBin}" ${filesToCompile.join(' ')}`;
 
           conn.exec(compileCmd, (cErr, cStream) => {
             if (cErr) {
