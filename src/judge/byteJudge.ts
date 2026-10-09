@@ -24,27 +24,49 @@ export function normalizeNewlinesBuf(buf: Buffer): Buffer {
 }
 
 /**
+ * 仅移除最后一行行末的换行符（\r\n 或 \n 或 \r）。
+ * 保留所有的空格与制表符，严格只去除全文末尾的单个换行。
+ */
+export function stripTrailingNewlineBuf(buf: Buffer): Buffer {
+  const len = buf.length;
+  if (len >= 2 && buf[len - 2] === 0x0d && buf[len - 1] === 0x0a) {
+    return buf.subarray(0, len - 2);
+  }
+  if (len >= 1 && (buf[len - 1] === 0x0a || buf[len - 1] === 0x0d)) {
+    return buf.subarray(0, len - 1);
+  }
+  return buf;
+}
+
+/**
  * Strict byte-by-byte comparison between actual output buffer and expected output buffer.
  * When normalizeNewlines is true, CRLF (\r\n) and LF (\n) differences are unified before byte comparison.
+ * When stripTrailing is true, 仅移除最后一行行末的换行符后再进行严格逐字节比对。
  */
 export function compareBytesStrict(
   actualBuf: Buffer,
   expectedBuf: Buffer,
   encoding: string = 'gb18030',
-  normalizeNewlines: boolean = true
+  normalizeNewlines: boolean = true,
+  stripTrailing: boolean = true
 ): ByteDiffDetail {
-  const actBuf = normalizeNewlines ? normalizeNewlinesBuf(actualBuf) : actualBuf;
-  const expBuf = normalizeNewlines ? normalizeNewlinesBuf(expectedBuf) : expectedBuf;
+  let actBuf = normalizeNewlines ? normalizeNewlinesBuf(actualBuf) : actualBuf;
+  let expBuf = normalizeNewlines ? normalizeNewlinesBuf(expectedBuf) : expectedBuf;
+
+  if (stripTrailing) {
+    actBuf = stripTrailingNewlineBuf(actBuf);
+    expBuf = stripTrailingNewlineBuf(expBuf);
+  }
 
   if (actBuf.equals(expBuf)) {
-    const isNormalized = normalizeNewlines && !actualBuf.equals(expectedBuf);
+    const isModified = (normalizeNewlines && !actualBuf.equals(expectedBuf)) || (stripTrailing && (!actualBuf.equals(actBuf) || !expectedBuf.equals(expBuf)));
     return {
       matched: true,
       expectedLength: expBuf.length,
       actualLength: actBuf.length,
       firstDiffOffset: -1,
-      message: isNormalized
-        ? '输出与标准答案一致 (AC, 已自动统一 CRLF 与 LF 换行符)'
+      message: isModified
+        ? '输出与标准答案一致 (AC, 已自动统一换行符并去除文末换行)'
         : '输出与标准答案严格一致 (AC)',
     };
   }

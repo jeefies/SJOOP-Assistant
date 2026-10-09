@@ -72,10 +72,10 @@ export function activate(context: vscode.Context) {
             vscode.window
               .showWarningMessage(
                 `[SJOOP 编码告警] 当前文件保存为 ${encCheck.encoding.toUpperCase()}！SJ 课程红线要求必须使用 GB18030。`,
-                '一键转为 GB18030'
+                '转为 GB18030'
               )
               .then((sel) => {
-                if (sel === '一键转为 GB18030') {
+                if (sel === '转为 GB18030') {
                   vscode.commands.executeCommand('sjoop.convertToGB18030');
                 }
               });
@@ -98,9 +98,9 @@ export function activate(context: vscode.Context) {
         vscode.window.showInformationMessage(`编码检测通过: ${res.encoding.toUpperCase()} (符合 GB18030 要求)`);
       } else {
         vscode.window
-          .showWarningMessage(res.message || '文件非 GB18030 编码！', '一键转为 GB18030')
+          .showWarningMessage(res.message || '文件非 GB18030 编码！', '转为 GB18030')
           .then((sel) => {
-            if (sel === '一键转为 GB18030') {
+            if (sel === '转为 GB18030') {
               vscode.commands.executeCommand('sjoop.convertToGB18030');
             }
           });

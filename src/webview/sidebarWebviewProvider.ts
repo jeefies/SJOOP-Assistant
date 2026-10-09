@@ -64,14 +64,22 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
           break;
         case 'updateStudentId':
           if (data.studentId !== undefined) {
-            const cfg = vscode.workspace.getConfiguration('sjoop');
-            await cfg.update('studentId', data.studentId.trim(), vscode.ConfigurationTarget.Global);
+            try {
+              const cfg = vscode.workspace.getConfiguration('sjoop');
+              await cfg.update('studentId', data.studentId.trim(), vscode.ConfigurationTarget.Global);
+            } catch (e: any) {
+              console.warn('保存学号至设置失败:', e);
+            }
           }
           break;
         case 'updateNormalizeNewlines':
           if (data.normalizeNewlines !== undefined) {
-            const cfg = vscode.workspace.getConfiguration('sjoop');
-            await cfg.update('judge.normalizeNewlines', !!data.normalizeNewlines, vscode.ConfigurationTarget.Global);
+            try {
+              const cfg = vscode.workspace.getConfiguration('sjoop');
+              await cfg.update('judge.normalizeNewlines', !!data.normalizeNewlines, vscode.ConfigurationTarget.Global);
+            } catch (e: any) {
+              console.warn('保存换行符配置失败:', e);
+            }
           }
           break;
         case 'updateTestCases':
@@ -232,7 +240,11 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       }
 
       // 学号输入后持久化保存
-      await config.update('studentId', studentId, vscode.ConfigurationTarget.Global);
+      try {
+        await config.update('studentId', studentId, vscode.ConfigurationTarget.Global);
+      } catch (e: any) {
+        console.warn('保存学号至 VS Code 设置失败:', e);
+      }
 
       // 2. 检查 SSH 私钥
       const customKey = (config.get<string>('linux.privateKeyPath') || '').trim();
@@ -370,6 +382,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     };
 
     const normalizeNewlines = config.get<boolean>('judge.normalizeNewlines', true);
+    const stripTrailingNewlines = config.get<boolean>('judge.stripTrailingNewlines', true);
     const strictDiff = config.get<boolean>('judge.strictByteDiff', true);
 
     this._view?.webview.postMessage({ type: 'runStart' });
@@ -384,6 +397,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         timeoutMs: config.get<number>('judge.timeoutMs', 5000),
         strictDiff,
         normalizeNewlines,
+        stripTrailingNewlines,
         msvcFlags: config.get<string[]>('msvc.flags'),
         customVcvars: config.get<string>('msvc.vcvarsPath'),
         mingwFlags: config.get<string[]>('mingw.flags'),
@@ -406,6 +420,9 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   private _getHtmlForWebview(_webview: vscode.Webview): string {
+    const config = vscode.workspace.getConfiguration('sjoop');
+    const existingStudentId = (config.get<string>('studentId', '') || '').trim();
+
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -591,7 +608,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     </div>
     <div id="encodingAlert" style="display:none; font-size: 11px; color: #f14c4c; margin-top: 4px;">
       ⚠️ SJ 课程强制要求 GB18030！
-      <button class="btn btn-small" id="btnConvert" style="margin-left: 6px;">一键转为 GB18030</button>
+      <button class="btn btn-small" id="btnConvert" style="margin-left: 6px;">转为 GB18030</button>
     </div>
     <div style="font-size: 10px; color: #888; margin-top: 4px;" id="systemEncText">系统默认: 检测中...</div>
   </div>
@@ -641,8 +658,8 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     </div>
     <!-- Student ID Field -->
     <div style="display:flex; align-items:center; justify-content:space-between; padding: 6px 0; border-top: 1px dashed rgba(255,255,255,0.08); font-size:12px;">
-      <span>学号 (u{学号}):</span>
-      <input type="text" id="txtStudentId" style="width: 110px; padding: 3px 6px; background: var(--vscode-input-background, #1e1e1e); color: var(--vscode-input-foreground, #ccc); border: 1px solid var(--border); border-radius: 3px;" placeholder="例如: 2554207">
+      <span>学号：</span>
+      <input type="text" id="txtStudentId" value="${existingStudentId.replace(/"/g, '&quot;')}" style="width: 110px; padding: 3px 6px; background: var(--vscode-input-background, #1e1e1e); color: var(--vscode-input-foreground, #ccc); border: 1px solid var(--border); border-radius: 3px;" placeholder="例如: 2554207">
     </div>
     <div id="sshStatusArea" style="font-size: 11px; margin-top: 6px; display: none; padding: 6px; border-radius: 4px; background: rgba(0,0,0,0.25); word-break: break-all; transition: opacity 0.3s ease;"></div>
   </div>
@@ -651,12 +668,12 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
   <div style="margin: 6px 0 8px 0; padding: 0 4px;">
     <label class="toggle-label" style="font-size: 11px;">
       <input type="checkbox" id="chkNormalizeNewlines" checked>
-      <strong>统一换行符 (CRLF \r\n 与 LF \n 视为一致)</strong>
+      <strong>统一换行符并去除文末换行 (CRLF/LF 归一化 & 忽略末尾换行)</strong>
     </label>
   </div>
 
   <!-- Action Run Button -->
-  <button class="btn btn-full" id="btnRunBatch">🚀 一键编译并运行测试</button>
+  <button class="btn btn-full" id="btnRunBatch">🚀 编译并运行测试</button>
   <div id="progressText" style="font-size: 11px; color: #4ec9b0; text-align: center; margin: 6px 0; min-height: 16px;"></div>
 
   <!-- Test Results Matrix -->
@@ -776,6 +793,9 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
           setSshStatus(msg.message, msg.success ? 'success' : 'error', 6000);
           break;
         case 'runStart':
+          // 新测试开始时，自动关闭上次的测试详情弹窗
+          document.getElementById('detailModal').style.display = 'none';
+          document.getElementById('modalContent').innerHTML = '';
           setProgressText('开始编译任务...', 0);
           document.getElementById('btnRunBatch').disabled = true;
           break;
@@ -783,6 +803,9 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
           setProgressText(msg.message, 0);
           break;
         case 'runComplete':
+          // 测试完成时，关闭旧弹窗并渲染最新结果
+          document.getElementById('detailModal').style.display = 'none';
+          document.getElementById('modalContent').innerHTML = '';
           setProgressText('测试完成！', 5000);
           document.getElementById('btnRunBatch').disabled = false;
           state.lastRunResult = msg.result;
@@ -842,7 +865,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       // Student ID
       const sidInput = document.getElementById('txtStudentId');
       if (state.compilerPaths && state.compilerPaths.studentId !== undefined) {
-        if (document.activeElement !== sidInput) {
+        if (!sidInput.value || document.activeElement !== sidInput) {
           sidInput.value = state.compilerPaths.studentId;
         }
       }

@@ -13,6 +13,7 @@ export interface BatchRunOptions {
   timeoutMs: number;
   strictDiff: boolean;
   normalizeNewlines?: boolean;
+  stripTrailingNewlines?: boolean;
   msvcFlags?: string[];
   customVcvars?: string;
   mingwFlags?: string[];
@@ -37,6 +38,7 @@ export class CompilerRunner {
       timeoutMs,
       strictDiff,
       normalizeNewlines = true,
+      stripTrailingNewlines = true,
       msvcFlags,
       customVcvars,
       mingwFlags,
@@ -71,7 +73,7 @@ export class CompilerRunner {
         onProgress?.('MSVC 编译成功，正在执行测试点...');
         for (const tc of testCases) {
           if (!tc.enabled) continue;
-          const runRes = await MsvcDriver.runTestCase(cRes.outputBinaryPath, tc, timeoutMs, strictDiff, normalizeNewlines);
+          const runRes = await MsvcDriver.runTestCase(cRes.outputBinaryPath, tc, timeoutMs, strictDiff, normalizeNewlines, stripTrailingNewlines);
           result.runs.msvc.push(runRes);
         }
       }
@@ -88,7 +90,7 @@ export class CompilerRunner {
         onProgress?.('MinGW 编译成功，正在执行测试点...');
         for (const tc of testCases) {
           if (!tc.enabled) continue;
-          const runRes = await MingwDriver.runTestCase(cRes.outputBinaryPath, tc, timeoutMs, strictDiff, normalizeNewlines);
+          const runRes = await MingwDriver.runTestCase(cRes.outputBinaryPath, tc, timeoutMs, strictDiff, normalizeNewlines, stripTrailingNewlines);
           result.runs.mingw.push(runRes);
         }
       }
@@ -104,7 +106,8 @@ export class CompilerRunner {
         testCases,
         timeoutMs,
         strictDiff,
-        normalizeNewlines
+        normalizeNewlines,
+        stripTrailingNewlines
       );
       result.compilations.linux = compileResult;
       result.runs.linux = runResults;

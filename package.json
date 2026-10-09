@@ -2,7 +2,7 @@
   "name": "sjoop-assistant",
   "displayName": "SJOOP Assistant (同济程序设计助手)",
   "description": "专为同济大学程序设计/OOP课程定制的VSCode辅助插件，支持MSVC/MinGW/Linux三编译器联动与GB18030编码守护。",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "jeefy",
   "engines": {
     "vscode": "^1.90.0"
@@ -48,7 +48,7 @@
       },
       {
         "command": "sjoop.buildAndRun",
-        "title": "SJOOP: 一键编译并运行测试"
+        "title": "SJOOP: 编译并运行测试"
       },
       {
         "command": "sjoop.testSSHConnection",
@@ -179,6 +179,11 @@
           "type": "boolean",
           "default": true,
           "description": "自动归一化换行符（将 \\r\\n 与 \\n 视为一致，解决 Windows 与 Linux 换行符差异）"
+        },
+        "sjoop.judge.stripTrailingNewlines": {
+          "type": "boolean",
+          "default": true,
+          "description": "逐字比对时自动去除最后一行行末的换行符（忽略末尾 \\n / \\r\\n）"
         },
         "sjoop.judge.strictByteDiff": {
           "type": "boolean",

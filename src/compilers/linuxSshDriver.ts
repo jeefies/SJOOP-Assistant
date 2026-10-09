@@ -151,7 +151,8 @@ export class LinuxSshDriver {
     testCases: TestCase[],
     timeoutMs: number = 5000,
     strictDiff: boolean = true,
-    normalizeNewlines: boolean = true
+    normalizeNewlines: boolean = true,
+    stripTrailingNewlines: boolean = true
   ): Promise<{ compileResult: CompileResult; runResults: SingleRunResult[] }> {
     const startTime = Date.now();
     const connConfig = this.getConnectConfig(config);
@@ -343,7 +344,7 @@ export class LinuxSshDriver {
                         });
                       }
 
-                      const diff = compareBytesStrict(actBytes, expBytes, 'gb18030', normalizeNewlines);
+                      const diff = compareBytesStrict(actBytes, expBytes, 'gb18030', normalizeNewlines, stripTrailingNewlines);
                       tcRes({
                         testCaseId: tc.id,
                         compiler: 'linux',

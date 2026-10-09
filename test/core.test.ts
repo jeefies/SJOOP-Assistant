@@ -96,17 +96,31 @@ describe('SJOOP Core Modules Test Suite', () => {
       const bufExpected = Buffer.from('Hello\nWorld\n', 'ascii');
       const diff = compareBytesStrict(bufActual, bufExpected, 'gb18030', true);
       assert.strictEqual(diff.matched, true);
-      assert.ok(diff.message.includes('已自动统一 CRLF 与 LF 换行符'));
+      assert.ok(diff.message.includes('已自动统一换行符'));
     });
 
-    it('should report WA on newline difference when normalizeNewlines is false', () => {
+    it('should report WA on newline difference when normalizeNewlines is false and stripTrailing is false', () => {
       const bufActual = Buffer.from('Hello\r\n', 'ascii');
       const bufExpected = Buffer.from('Hello\n', 'ascii');
-      const diff = compareBytesStrict(bufActual, bufExpected, 'gb18030', false);
+      const diff = compareBytesStrict(bufActual, bufExpected, 'gb18030', false, false);
       assert.strictEqual(diff.matched, false);
       assert.strictEqual(diff.firstDiffOffset, 5);
       assert.strictEqual(diff.actualByte, 0x0d);
       assert.strictEqual(diff.expectedByte, 0x0a);
+    });
+
+    it('should strip trailing newline from the last line when stripTrailing is true', () => {
+      const bufActual = Buffer.from('Hello World\n', 'ascii');
+      const bufExpected = Buffer.from('Hello World', 'ascii');
+      const diff = compareBytesStrict(bufActual, bufExpected, 'gb18030', true, true);
+      assert.strictEqual(diff.matched, true);
+    });
+
+    it('should preserve whitespace and only remove trailing newline', () => {
+      const bufActual = Buffer.from('Hello \n', 'ascii');
+      const bufExpected = Buffer.from('Hello\n', 'ascii');
+      const diff = compareBytesStrict(bufActual, bufExpected, 'gb18030', true, true);
+      assert.strictEqual(diff.matched, false);
     });
 
     it('should report WA on content difference', () => {
