@@ -138,11 +138,14 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   public setActiveFile(filePath: string | null) {
+    if (this.activeEditorPath === filePath) {
+      return;
+    }
     this.activeEditorPath = filePath;
 
     // 多文件模式下，切换焦点文件绝不重置模式或刷新工程配置！保持多文件项目锁定
     if (this.currentProjectConfig.mode === 'multi') {
-      this.refreshState();
+      this.notifyActiveFileChanged(filePath);
       return;
     }
 
@@ -150,6 +153,26 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     this.currentFilePath = filePath;
     this.loadDataForActiveFile();
     this.refreshState();
+  }
+
+  private notifyActiveFileChanged(filePath: string | null) {
+    if (!this._view) return;
+    const config = vscode.workspace.getConfiguration('sjoop');
+    const encodingTarget = config.get<string>('encoding.targetCharset', 'gb18030');
+    let encResult = null;
+    const fileToCheck = filePath || this.currentProjectConfig.mainFile;
+    if (fileToCheck && fs.existsSync(fileToCheck)) {
+      encResult = checkFileEncoding(fileToCheck, encodingTarget);
+    }
+    const systemEncoding = getSystemEncoding();
+
+    this._view.webview.postMessage({
+      type: 'activeFileChanged',
+      filePath: fileToCheck,
+      fileName: fileToCheck ? path.basename(fileToCheck) : null,
+      systemEncoding,
+      encodingInfo: encResult,
+    });
   }
 
   private getProjectRootAndBase(): { wsFolder: string; baseName: string } | null {
@@ -897,6 +920,13 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
           state = { ...state, ...msg };
           renderUI();
           break;
+        case 'activeFileChanged':
+          state.filePath = msg.filePath;
+          state.fileName = msg.fileName;
+          state.systemEncoding = msg.systemEncoding;
+          state.encodingInfo = msg.encodingInfo;
+          renderHeaderOnly();
+          break;
         case 'sshTestStart':
           setSshStatus(msg.message, 'loading', 0);
           break;
@@ -909,6 +939,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
           document.getElementById('modalContent').innerHTML = '';
           setProgressText('开始编译任务...', 0);
           document.getElementById('btnRunBatch').disabled = true;
+          lastRenderedResultsKey = '';
           break;
         case 'runProgress':
           setProgressText(msg.message, 0);
@@ -929,7 +960,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       }
     });
 
-    function renderUI() {
+    function renderHeaderOnly() {
       // 1. Header & Encoding
       document.getElementById('activeFileName').textContent = state.fileName || '未打开 C/C++ 文件';
 
@@ -960,6 +991,36 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
           alertBox.style.display = 'none';
         }
       }
+    }
+
+    let lastRenderedSourcesJson = '';
+    function renderSourceList(addFiles) {
+      const sourcesJson = JSON.stringify(addFiles || []);
+      if (sourcesJson === lastRenderedSourcesJson) {
+        return;
+      }
+      lastRenderedSourcesJson = sourcesJson;
+      const ul = document.getElementById('sourceFileList');
+      ul.innerHTML = '';
+      (addFiles || []).forEach(f => {
+        const li = document.createElement('li');
+        li.className = 'source-item';
+        const span = document.createElement('span');
+        span.title = f;
+        span.textContent = getBaseName(f) || f;
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-small btn-secondary';
+        btn.textContent = '移除';
+        btn.onclick = () => removeSource(f);
+        li.appendChild(span);
+        li.appendChild(btn);
+        ul.appendChild(li);
+      });
+    }
+
+    function renderUI() {
+      // 1. Header & Encoding
+      renderHeaderOnly();
 
       // 2. Mode buttons
       const isMulti = state.projectConfig && state.projectConfig.mode === 'multi';
@@ -970,24 +1031,9 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       if (isMulti) {
         const addFiles = state.projectConfig.additionalFiles || [];
         document.getElementById('sourceFileCount').textContent = addFiles.length;
-
-        // Source file list
-        const ul = document.getElementById('sourceFileList');
-        ul.innerHTML = '';
-        addFiles.forEach(f => {
-          const li = document.createElement('li');
-          li.className = 'source-item';
-          const span = document.createElement('span');
-          span.title = f;
-          span.textContent = getBaseName(f) || f;
-          const btn = document.createElement('button');
-          btn.className = 'btn btn-small btn-secondary';
-          btn.textContent = '移除';
-          btn.onclick = () => removeSource(f);
-          li.appendChild(span);
-          li.appendChild(btn);
-          ul.appendChild(li);
-        });
+        renderSourceList(addFiles);
+      } else {
+        lastRenderedSourcesJson = '';
       }
 
       // 3. Compilers
@@ -1012,15 +1058,24 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       // 5. Results if available
       if (state.lastRunResult) {
         renderResults(state.lastRunResult);
+      } else {
+        document.getElementById('resultCard').style.display = 'none';
+        lastRenderedResultsKey = '';
       }
     }
 
+    let lastRenderedCasesJson = '';
     function renderCases() {
+      const casesJson = JSON.stringify(state.testCases || []);
+      if (casesJson === lastRenderedCasesJson) {
+        return;
+      }
+      lastRenderedCasesJson = casesJson;
       const container = document.getElementById('caseListContainer');
       container.innerHTML = '';
-      document.getElementById('caseCount').textContent = state.testCases.length;
+      document.getElementById('caseCount').textContent = (state.testCases || []).length;
 
-      state.testCases.forEach((tc, idx) => {
+      (state.testCases || []).forEach((tc, idx) => {
         const box = document.createElement('div');
         box.className = 'case-box';
 
@@ -1072,8 +1127,23 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       });
     }
 
+    let lastRenderedResultsKey = '';
     function renderResults(result) {
       const card = document.getElementById('resultCard');
+      if (!result) {
+        card.style.display = 'none';
+        lastRenderedResultsKey = '';
+        return;
+      }
+      const currentKey = JSON.stringify({
+        res: result,
+        cases: (state.testCases || []).map(c => ({ id: c.id, name: c.name, enabled: c.enabled })),
+        compilers: state.compilers
+      });
+      if (currentKey === lastRenderedResultsKey && card.style.display === 'block') {
+        return;
+      }
+      lastRenderedResultsKey = currentKey;
       const body = document.getElementById('resultBody');
       body.innerHTML = '';
       card.style.display = 'block';

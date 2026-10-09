@@ -8,6 +8,7 @@ import { compareBytesStrict } from '../src/judge/byteJudge';
 import { CaseManager } from '../src/storage/caseManager';
 import { MsvcDriver } from '../src/compilers/msvcDriver';
 import { MingwDriver } from '../src/compilers/mingwDriver';
+import { LinuxSshDriver } from '../src/compilers/linuxSshDriver';
 import { TestCase } from '../src/types';
 
 describe('SJOOP Core Modules Test Suite', () => {
@@ -226,6 +227,44 @@ describe('SJOOP Core Modules Test Suite', () => {
       });
 
       assert.strictEqual(runRes.status, 'AC', `Expected AC but got ${runRes.status}: diff=${runRes.byteDiff?.message}`);
+    });
+  });
+
+  describe('Linux SSH Driver (Remote Execution Timing & Sentinel Parsing)', () => {
+    it('should accurately parse nanosecond timestamps and compute millisecond duration', () => {
+      const rawStderr = 'warning: unused variable\n__SJOOP_TIME__:1712712345000000000:1712712345042000000:0\n';
+      const parsed = LinuxSshDriver.parseExecutionTiming(rawStderr, 500, 0);
+
+      assert.strictEqual(parsed.timeMs, 42, 'Duration should be 42ms');
+      assert.strictEqual(parsed.exitCode, 0, 'Exit code should be 0');
+      assert.strictEqual(parsed.stderr, 'warning: unused variable', 'Stderr should have sentinel stripped');
+    });
+
+    it('should parse non-zero exit codes from remote program', () => {
+      const rawStderr = 'Floating point exception (core dumped)\n__SJOOP_TIME__:1712712345000000000:1712712345015000000:136\n';
+      const parsed = LinuxSshDriver.parseExecutionTiming(rawStderr, 1000, 0);
+
+      assert.strictEqual(parsed.timeMs, 15);
+      assert.strictEqual(parsed.exitCode, 136);
+      assert.strictEqual(parsed.stderr, 'Floating point exception (core dumped)');
+    });
+
+    it('should fallback to second precision if nanoseconds are unavailable', () => {
+      const rawStderr = '__SJOOP_TIME__:1712712340:1712712343:0\n';
+      const parsed = LinuxSshDriver.parseExecutionTiming(rawStderr, 5000, 0);
+
+      assert.strictEqual(parsed.timeMs, 3000);
+      assert.strictEqual(parsed.exitCode, 0);
+      assert.strictEqual(parsed.stderr, '');
+    });
+
+    it('should retain fallback client time when timing sentinel is absent', () => {
+      const rawStderr = 'Killed by signal 9';
+      const parsed = LinuxSshDriver.parseExecutionTiming(rawStderr, 250, 137);
+
+      assert.strictEqual(parsed.timeMs, 250);
+      assert.strictEqual(parsed.exitCode, 137);
+      assert.strictEqual(parsed.stderr, 'Killed by signal 9');
     });
   });
 });

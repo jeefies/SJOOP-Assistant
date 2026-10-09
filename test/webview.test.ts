@@ -239,6 +239,71 @@ describe('Webview UI Comprehensive Automated Test Suite (JSDOM)', () => {
       assert.strictEqual(env.getLastMessage()?.type, 'removeAdditionalFile');
       assert.strictEqual(env.getLastMessage()?.filePath, 'C:\\project\\sub1.cpp');
     });
+
+    it('should seamlessly update header and encoding on activeFileChanged without destroying DOM elements', async () => {
+      const env = await createTestEnv();
+      await env.dispatchMessage({
+        type: 'stateUpdate',
+        fileName: 'main.cpp',
+        projectConfig: {
+          mode: 'multi',
+          mainFile: 'C:\\project\\main.cpp',
+          additionalFiles: ['C:\\project\\main.cpp', 'C:\\project\\sub.cpp'],
+        },
+        testCases: [{ id: 'tc1', name: '测试点 1', input: '1 2\n', expectedOutput: '3\n', enabled: true }],
+      });
+
+      const ul = env.document.getElementById('sourceFileList') as HTMLUListElement;
+      const caseContainer = env.document.getElementById('caseListContainer') as HTMLDivElement;
+      const initialUlItem = ul.children[0];
+      const initialCaseItem = caseContainer.children[0];
+
+      assert.ok(initialUlItem, 'Source list item should exist');
+      assert.ok(initialCaseItem, 'Case item should exist');
+
+      // Now dispatch activeFileChanged (user focused sub.cpp)
+      await env.dispatchMessage({
+        type: 'activeFileChanged',
+        filePath: 'C:\\project\\sub.cpp',
+        fileName: 'sub.cpp',
+        systemEncoding: 'CP936',
+        encodingInfo: { encoding: 'gb18030', isTargetEncoding: true },
+      });
+
+      const activeName = env.document.getElementById('activeFileName');
+      const badge = env.document.getElementById('encodingBadge');
+      assert.strictEqual(activeName?.textContent, 'sub.cpp');
+      assert.strictEqual(badge?.textContent, 'GB18030 ✅');
+
+      // Verify DOM identity is preserved (no flashing or recreation)
+      assert.strictEqual(ul.children[0], initialUlItem, 'Source list DOM should NOT be recreated');
+      assert.strictEqual(caseContainer.children[0], initialCaseItem, 'Case list DOM should NOT be recreated');
+    });
+
+    it('should memoize DOM rendering on identical stateUpdate so existing nodes are preserved', async () => {
+      const env = await createTestEnv();
+      const payload = {
+        type: 'stateUpdate',
+        projectConfig: {
+          mode: 'multi',
+          mainFile: 'C:\\project\\main.cpp',
+          additionalFiles: ['C:\\project\\main.cpp'],
+        },
+        testCases: [{ id: 'tc1', name: '测试点 1', input: 'in\n', expectedOutput: 'out\n', enabled: true }],
+      };
+
+      await env.dispatchMessage(payload);
+      const ul = env.document.getElementById('sourceFileList') as HTMLUListElement;
+      const caseContainer = env.document.getElementById('caseListContainer') as HTMLDivElement;
+      const savedUlItem = ul.children[0];
+      const savedCaseItem = caseContainer.children[0];
+
+      // Dispatch identical stateUpdate
+      await env.dispatchMessage(payload);
+
+      assert.strictEqual(ul.children[0], savedUlItem, 'Source item should be memoized without recreation');
+      assert.strictEqual(caseContainer.children[0], savedCaseItem, 'Case item should be memoized without recreation');
+    });
   });
 
   describe('5. Compiler Checkboxes & Settings', () => {

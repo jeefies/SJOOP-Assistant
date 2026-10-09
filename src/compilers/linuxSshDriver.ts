@@ -310,7 +310,7 @@ export class LinuxSshDriver {
 
                 const caseResult = await new Promise<SingleRunResult>((tcRes) => {
                   const tcStart = Date.now();
-                  const runCmd = `cd "${remoteBase}" && "${remoteBin}"`;
+                  const runCmd = `cd "${remoteBase}"; _t0=$(date +%s%N 2>/dev/null || date +%s); "${remoteBin}"; _rc=$?; _t1=$(date +%s%N 2>/dev/null || date +%s); echo "__SJOOP_TIME__:$_t0:$_t1:$_rc" >&2; exit $_rc`;
 
                   conn.exec(runCmd, (rErr, rStream) => {
                     if (rErr) {
@@ -345,32 +345,37 @@ export class LinuxSshDriver {
 
                     rStream.on('close', (rCode: number) => {
                       clearTimeout(timer);
-                      const tcTime = Date.now() - tcStart;
+                      const fallbackTime = Date.now() - tcStart;
                       const actBytes = Buffer.concat(rStdoutChunks);
                       const stdStr = iconv.decode(actBytes, 'gb18030');
-                      const errStr = iconv.decode(Buffer.concat(rStderrChunks), 'gb18030');
+                      const rawErrStr = iconv.decode(Buffer.concat(rStderrChunks), 'gb18030');
+
+                      const parsed = LinuxSshDriver.parseExecutionTiming(rawErrStr, fallbackTime, rCode);
+                      const tcTime = parsed.timeMs;
+                      const cleanErrStr = parsed.stderr;
+                      const effectiveCode = parsed.exitCode;
 
                       if (isKilled) {
                         return tcRes({
                           testCaseId: tc.id,
                           compiler: 'linux',
                           status: 'TLE',
-                          timeMs: tcTime,
+                          timeMs: fallbackTime,
                           exitCode: -1,
                           stdout: stdStr,
                           stderr: '程序运行超时 (Time Limit Exceeded)',
                         });
                       }
 
-                      if (rCode !== 0) {
+                      if (effectiveCode !== 0) {
                         return tcRes({
                           testCaseId: tc.id,
                           compiler: 'linux',
                           status: 'RE',
                           timeMs: tcTime,
-                          exitCode: rCode ?? -1,
+                          exitCode: effectiveCode,
                           stdout: stdStr,
-                          stderr: errStr || `程序异常退出，退出码: ${rCode}`,
+                          stderr: cleanErrStr || `程序异常退出，退出码: ${effectiveCode}`,
                         });
                       }
 
@@ -382,7 +387,7 @@ export class LinuxSshDriver {
                         timeMs: tcTime,
                         exitCode: 0,
                         stdout: stdStr,
-                        stderr: errStr,
+                        stderr: cleanErrStr,
                         byteDiff: diff,
                       });
                     });
@@ -409,5 +414,43 @@ export class LinuxSshDriver {
 
       conn.connect(connConfig);
     });
+  }
+
+  /**
+   * Parse the remote bash timing sentinel and exit code from stderr.
+   * Format: __SJOOP_TIME__:<start_ns_or_s>:<end_ns_or_s>:<exit_code>
+   */
+  public static parseExecutionTiming(
+    rawStderr: string,
+    fallbackTimeMs: number,
+    fallbackExitCode: number | undefined
+  ): { timeMs: number; exitCode: number; stderr: string } {
+    const timeRegex = /__SJOOP_TIME__:(\d+):(\d+):(-?\d+)[\r\n]*/;
+    const match = rawStderr.match(timeRegex);
+    let timeMs = fallbackTimeMs;
+    let exitCode = fallbackExitCode ?? 0;
+
+    if (match) {
+      try {
+        const rawT0 = match[1];
+        const rawT1 = match[2];
+        const parsedRc = parseInt(match[3], 10);
+        if (!isNaN(parsedRc)) {
+          exitCode = parsedRc;
+        }
+        if (rawT0.length >= 19 && rawT1.length >= 19) {
+          const diffNs = BigInt(rawT1) - BigInt(rawT0);
+          timeMs = Math.max(0, Math.round(Number(diffNs) / 1000000));
+        } else {
+          const diffS = BigInt(rawT1) - BigInt(rawT0);
+          timeMs = Math.max(0, Number(diffS) * 1000);
+        }
+      } catch {
+        // keep fallback
+      }
+    }
+
+    const cleanStderr = rawStderr.replace(/__SJOOP_TIME__:[^\r\n]*[\r\n]*/g, '').trim();
+    return { timeMs, exitCode, stderr: cleanStderr };
   }
 }
