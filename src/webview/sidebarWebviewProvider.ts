@@ -14,6 +14,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
 
   private currentFilePath: string | null = null;
+  private activeEditorPath: string | null = null;
   private currentTestCases: TestCase[] = [];
   private currentProjectConfig: ProjectConfig = {
     mode: 'single',
@@ -55,8 +56,24 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
           break;
         case 'updateConfig':
           if (data.projectConfig) {
+            const oldMode = this.currentProjectConfig.mode;
             this.currentProjectConfig = data.projectConfig;
-            this.saveCurrentProjectConfig();
+            if (!this.currentProjectConfig.additionalFiles) {
+              this.currentProjectConfig.additionalFiles = [];
+            }
+            if (this.currentProjectConfig.mode === 'multi') {
+              if (!this.currentProjectConfig.mainFile) {
+                this.currentProjectConfig.mainFile = this.activeEditorPath || this.currentFilePath || '';
+              }
+              this.saveCurrentProjectConfig();
+            } else if (oldMode === 'multi' && this.currentProjectConfig.mode === 'single') {
+              this.saveCurrentProjectConfig();
+              this.currentFilePath = this.activeEditorPath || this.currentFilePath;
+              this.loadDataForActiveFile();
+            } else {
+              this.saveCurrentProjectConfig();
+            }
+            this.refreshState();
           }
           if (data.compilers) {
             this.selectedCompilers = data.compilers;
@@ -114,9 +131,28 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   public setActiveFile(filePath: string | null) {
+    this.activeEditorPath = filePath;
+
+    // 多文件模式下，切换焦点文件绝不重置模式或刷新工程配置！保持多文件项目锁定
+    if (this.currentProjectConfig.mode === 'multi') {
+      this.refreshState();
+      return;
+    }
+
+    // 单文件模式下，跟随活动编辑器文件切换
     this.currentFilePath = filePath;
     this.loadDataForActiveFile();
     this.refreshState();
+  }
+
+  private getProjectRootAndBase(): { wsFolder: string; baseName: string } | null {
+    const main = (this.currentProjectConfig.mode === 'multi' && this.currentProjectConfig.mainFile)
+      ? this.currentProjectConfig.mainFile
+      : this.currentFilePath;
+    if (!main) return null;
+    const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || path.dirname(main);
+    const baseName = path.basename(main, path.extname(main));
+    return { wsFolder, baseName };
   }
 
   private loadDataForActiveFile() {
@@ -130,20 +166,24 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
 
     this.currentTestCases = CaseManager.loadTestCases(wsFolder, baseName);
     this.currentProjectConfig = CaseManager.loadProjectConfig(wsFolder, baseName, this.currentFilePath);
+    if (!this.currentProjectConfig.additionalFiles) {
+      this.currentProjectConfig.additionalFiles = [];
+    }
+    if (!this.currentProjectConfig.mainFile) {
+      this.currentProjectConfig.mainFile = this.currentFilePath;
+    }
   }
 
   private saveCurrentTestCases() {
-    if (!this.currentFilePath) return;
-    const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || path.dirname(this.currentFilePath);
-    const baseName = path.basename(this.currentFilePath, path.extname(this.currentFilePath));
-    CaseManager.saveTestCases(wsFolder, baseName, this.currentTestCases);
+    const target = this.getProjectRootAndBase();
+    if (!target) return;
+    CaseManager.saveTestCases(target.wsFolder, target.baseName, this.currentTestCases);
   }
 
   private saveCurrentProjectConfig() {
-    if (!this.currentFilePath) return;
-    const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || path.dirname(this.currentFilePath);
-    const baseName = path.basename(this.currentFilePath, path.extname(this.currentFilePath));
-    CaseManager.saveProjectConfig(wsFolder, baseName, this.currentProjectConfig);
+    const target = this.getProjectRootAndBase();
+    if (!target) return;
+    CaseManager.saveProjectConfig(target.wsFolder, target.baseName, this.currentProjectConfig);
   }
 
   public refreshState() {
@@ -153,8 +193,10 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     const encodingTarget = config.get<string>('encoding.targetCharset', 'gb18030');
     let encResult = null;
 
-    if (this.currentFilePath && fs.existsSync(this.currentFilePath)) {
-      encResult = checkFileEncoding(this.currentFilePath, encodingTarget);
+    // 优先检查当前正在编辑的代码文件编码，没有则检查主文件
+    const fileToCheck = this.activeEditorPath || this.currentFilePath || this.currentProjectConfig.mainFile;
+    if (fileToCheck && fs.existsSync(fileToCheck)) {
+      encResult = checkFileEncoding(fileToCheck, encodingTarget);
     }
 
     const msvcPath = config.get<string>('msvc.vcvarsPath') || MsvcDriver.findVcvars();
@@ -163,10 +205,12 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     const sshKeyPath = config.get<string>('linux.privateKeyPath') || LinuxSshDriver.findDefaultPrivateKey();
     const normalizeNewlines = config.get<boolean>('judge.normalizeNewlines', true);
 
+    const displayFile = fileToCheck;
+
     this._view.webview.postMessage({
       type: 'stateUpdate',
-      filePath: this.currentFilePath,
-      fileName: this.currentFilePath ? path.basename(this.currentFilePath) : null,
+      filePath: displayFile,
+      fileName: displayFile ? path.basename(displayFile) : null,
       encodingInfo: encResult,
       compilers: this.selectedCompilers,
       normalizeNewlines,
@@ -184,8 +228,9 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   private async handleConvertEncoding() {
-    if (!this.currentFilePath) return;
-    const res = convertFileToGB18030(this.currentFilePath);
+    const fileToConvert = this.activeEditorPath || this.currentFilePath || this.currentProjectConfig.mainFile;
+    if (!fileToConvert || !fs.existsSync(fileToConvert)) return;
+    const res = convertFileToGB18030(fileToConvert);
     if (res.success) {
       vscode.window.showInformationMessage(res.message);
       this.refreshState();
@@ -202,8 +247,16 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     });
 
     if (uris && uris.length > 0) {
+      if (!this.currentProjectConfig.additionalFiles) {
+        this.currentProjectConfig.additionalFiles = [];
+      }
+      const normalize = (p: string) => path.resolve(p).toLowerCase();
+      const mainPath = this.currentProjectConfig.mainFile || this.currentFilePath || '';
+      const mainNorm = mainPath ? normalize(mainPath) : '';
+
       for (const u of uris) {
-        if (!this.currentProjectConfig.additionalFiles.includes(u.fsPath) && u.fsPath !== this.currentFilePath) {
+        const uNorm = normalize(u.fsPath);
+        if (uNorm !== mainNorm && !this.currentProjectConfig.additionalFiles.some((f) => normalize(f) === uNorm)) {
           this.currentProjectConfig.additionalFiles.push(u.fsPath);
         }
       }
@@ -213,8 +266,11 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   private handleRemoveAdditionalFile(fPath: string) {
+    if (!this.currentProjectConfig.additionalFiles) return;
+    const normalize = (p: string) => path.resolve(p).toLowerCase();
+    const targetNorm = normalize(fPath);
     this.currentProjectConfig.additionalFiles = this.currentProjectConfig.additionalFiles.filter(
-      (p) => p !== fPath
+      (p) => normalize(p) !== targetNorm
     );
     this.saveCurrentProjectConfig();
     this.refreshState();
@@ -318,24 +374,37 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   public async handleRunBatch() {
-    if (!this.currentFilePath) {
-      const msg = '请先在编辑器中打开一个 C/C++ 源文件！';
-      vscode.window.showWarningMessage(msg);
-      this._view?.webview.postMessage({ type: 'runError', message: msg });
-      return;
-    }
-
     // Auto save all active files before compiling
     await vscode.workspace.saveAll(false);
 
     const config = vscode.workspace.getConfiguration('sjoop');
-    const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || path.dirname(this.currentFilePath);
-    const baseName = path.basename(this.currentFilePath, path.extname(this.currentFilePath));
+    let sources: string[] = [];
+    let baseName = '';
+    let wsFolder = '';
 
-    // Determine sources
-    let sources: string[] = [this.currentFilePath];
     if (this.currentProjectConfig.mode === 'multi') {
-      sources = [this.currentFilePath, ...this.currentProjectConfig.additionalFiles.filter(fs.existsSync)];
+      const main = this.currentProjectConfig.mainFile || this.currentFilePath || this.activeEditorPath;
+      if (!main || !fs.existsSync(main)) {
+        const msg = '未找到多文件项目的主源文件！请在单文件模式下打开主程序后再切换为多文件模式。';
+        vscode.window.showErrorMessage(msg);
+        this._view?.webview.postMessage({ type: 'runError', message: msg });
+        return;
+      }
+      wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || path.dirname(main);
+      baseName = path.basename(main, path.extname(main));
+      const addFiles = (this.currentProjectConfig.additionalFiles || []).filter(fs.existsSync);
+      sources = [main, ...addFiles];
+    } else {
+      const activeFile = this.currentFilePath || this.activeEditorPath;
+      if (!activeFile || !fs.existsSync(activeFile)) {
+        const msg = '请先在编辑器中打开一个 C/C++ 源文件！';
+        vscode.window.showWarningMessage(msg);
+        this._view?.webview.postMessage({ type: 'runError', message: msg });
+        return;
+      }
+      wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || path.dirname(activeFile);
+      baseName = path.basename(activeFile, path.extname(activeFile));
+      sources = [activeFile];
     }
 
     let studentId = config.get<string>('studentId', '').trim();
@@ -623,7 +692,10 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       </div>
     </div>
     <div id="multiFileSection" style="display: none; margin-top: 6px;">
-      <div style="font-size: 11px; color: #aaa; margin-bottom: 4px;">联合编译源文件列表:</div>
+      <div style="font-size: 11px; margin-bottom: 6px; padding: 4px 6px; background: rgba(78, 201, 176, 0.12); border-left: 3px solid #4ec9b0; border-radius: 2px;">
+        主程序 (main): <strong id="mainFileName" style="color: #4ec9b0;">-</strong>
+      </div>
+      <div style="font-size: 11px; color: #aaa; margin-bottom: 4px;">联合编译附加源文件 / 头文件 (<span id="sourceFileCount">0</span>):</div>
       <ul class="source-list" id="sourceFileList"></ul>
       <button class="btn btn-small" id="btnAddSource">+ 添加 .cpp / .h 文件</button>
     </div>
@@ -840,19 +912,25 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       }
 
       // 2. Mode buttons
-      const isMulti = state.projectConfig.mode === 'multi';
+      const isMulti = state.projectConfig && state.projectConfig.mode === 'multi';
       document.getElementById('btnModeSingle').className = !isMulti ? 'btn btn-small' : 'btn btn-small btn-secondary';
       document.getElementById('btnModeMulti').className = isMulti ? 'btn btn-small' : 'btn btn-small btn-secondary';
       document.getElementById('multiFileSection').style.display = isMulti ? 'block' : 'none';
 
-      // Source file list
-      const ul = document.getElementById('sourceFileList');
-      ul.innerHTML = '';
-      if (isMulti && state.projectConfig.additionalFiles) {
-        state.projectConfig.additionalFiles.forEach(f => {
+      if (isMulti) {
+        const mainPath = state.projectConfig.mainFile || state.filePath || '';
+        document.getElementById('mainFileName').innerText = mainPath ? mainPath.split(/[\\/]/).pop() : '未指定';
+        const addFiles = state.projectConfig.additionalFiles || [];
+        document.getElementById('sourceFileCount').innerText = addFiles.length;
+
+        // Source file list
+        const ul = document.getElementById('sourceFileList');
+        ul.innerHTML = '';
+        addFiles.forEach(f => {
           const li = document.createElement('li');
           li.className = 'source-item';
-          li.innerHTML = '<span>' + f.split(/[\\\\/]/).pop() + '</span><button class="btn btn-small btn-secondary" onclick="removeSource(\\'' + encodeURIComponent(f) + '\\')">移除</button>';
+          const baseName = f.split(/[\\/]/).pop();
+          li.innerHTML = '<span title="' + escapeHtml(f) + '">' + escapeHtml(baseName) + '</span><button class="btn btn-small btn-secondary" onclick="removeSource(\'' + encodeURIComponent(f) + '\')">移除</button>';
           ul.appendChild(li);
         });
       }
