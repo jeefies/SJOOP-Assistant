@@ -214,25 +214,48 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
 
   private async handleTestSSH(uiStudentId?: string) {
     const config = vscode.workspace.getConfiguration('sjoop');
-    let studentId = uiStudentId ? uiStudentId.trim() : config.get<string>('studentId', '').trim();
+    let studentId = (uiStudentId !== undefined && uiStudentId.trim() !== '')
+      ? uiStudentId.trim()
+      : config.get<string>('studentId', '').trim();
 
+    // 1. 检查学号配置
     if (!studentId) {
-      const inputId = await vscode.window.showInputBox({
-        prompt: '请输入学号 (登录用户名将为 u{学号})',
-        placeHolder: '例如: 2554207',
+      const msg = '请输入学号！';
+      vscode.window.showErrorMessage(msg);
+      this._view?.webview.postMessage({
+        type: 'sshTestResult',
+        success: false,
+        message: msg,
       });
-      if (inputId) {
-        studentId = inputId.trim();
-        await config.update('studentId', studentId, vscode.ConfigurationTarget.Global);
-      } else {
-        return;
-      }
-    } else if (uiStudentId && uiStudentId !== config.get<string>('studentId', '')) {
-      await config.update('studentId', studentId, vscode.ConfigurationTarget.Global);
+      return;
     }
 
-    const host = config.get<string>('linux.host', '10.80.42.230');
+    // 学号输入后持久化保存
+    await config.update('studentId', studentId, vscode.ConfigurationTarget.Global);
+
+    // 2. 检查 SSH 私钥
+    const customKey = (config.get<string>('linux.privateKeyPath') || '').trim();
+    const keyPath = (customKey && fs.existsSync(customKey)) ? customKey : LinuxSshDriver.findDefaultPrivateKey();
+    if (!keyPath || !fs.existsSync(keyPath)) {
+      const msg = '未找到私钥路径，请检查 %HOME%/.ssh 或者在设置中手动定位';
+      vscode.window.showErrorMessage(msg);
+      this._view?.webview.postMessage({
+        type: 'sshTestResult',
+        success: false,
+        message: msg,
+      });
+      return;
+    }
+
+    // 3. 检查服务器地址
+    const host = (config.get<string>('linux.host') || '10.80.42.230').trim();
     const port = config.get<number>('linux.port', 22);
+    if (!host) {
+      const msg = '未配置 Linux 服务器地址 (默认: 10.80.42.230)';
+      vscode.window.showErrorMessage(msg);
+      this._view?.webview.postMessage({ type: 'sshTestResult', success: false, message: msg });
+      return;
+    }
 
     this._view?.webview.postMessage({
       type: 'sshTestStart',
@@ -243,12 +266,20 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       host,
       port,
       studentId,
-      privateKeyPath: config.get<string>('linux.privateKeyPath') || undefined,
+      privateKeyPath: keyPath,
       remoteDir: config.get<string>('linux.remoteDir', '~/sjoop_tmp'),
       flags: config.get<string[]>('linux.flags', []),
     };
 
-    const res = await LinuxSshDriver.testConnection(sshConf);
+    const res = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `SJOOP: 正在连接 Linux 服务器 (${host}:${port})...`,
+      },
+      async () => {
+        return await LinuxSshDriver.testConnection(sshConf);
+      }
+    );
 
     this._view?.webview.postMessage({
       type: 'sshTestResult',
@@ -291,20 +322,16 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     if (this.selectedCompilers.mingw) activeCompilers.push('mingw');
     if (this.selectedCompilers.linux) {
       if (!studentId) {
-        const inputId = await vscode.window.showInputBox({
-          prompt: '检测到选中了 Linux 编译器，请输入学号 (用户名: u{学号})',
-          placeHolder: '例如: 2554207',
-        });
-        if (inputId) {
-          studentId = inputId.trim();
-          await config.update('studentId', studentId, vscode.ConfigurationTarget.Global);
-        } else {
-          vscode.window.showErrorMessage('未提供学号，已跳过 Linux 远程编译。');
-        }
+        vscode.window.showErrorMessage('请输入学号！(使用 Linux 远程编译必须配置学号)');
+        return;
       }
-      if (studentId) {
-        activeCompilers.push('linux');
+      const customKey = (config.get<string>('linux.privateKeyPath') || '').trim();
+      const keyPath = (customKey && fs.existsSync(customKey)) ? customKey : LinuxSshDriver.findDefaultPrivateKey();
+      if (!keyPath || !fs.existsSync(keyPath)) {
+        vscode.window.showErrorMessage('未找到私钥路径，请检查 %HOME%/.ssh 或者在设置中手动定位');
+        return;
       }
+      activeCompilers.push('linux');
     }
 
     if (activeCompilers.length === 0) {
@@ -312,11 +339,14 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    const customKey = (config.get<string>('linux.privateKeyPath') || '').trim();
+    const keyPath = (customKey && fs.existsSync(customKey)) ? customKey : LinuxSshDriver.findDefaultPrivateKey();
+
     const sshConf: SshConfig = {
       host: config.get<string>('linux.host', '10.80.42.230'),
       port: config.get<number>('linux.port', 22),
       studentId: studentId,
-      privateKeyPath: config.get<string>('linux.privateKeyPath') || undefined,
+      privateKeyPath: keyPath || undefined,
       remoteDir: config.get<string>('linux.remoteDir', '~/sjoop_tmp'),
       flags: config.get<string[]>('linux.flags', []),
     };
@@ -896,7 +926,11 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     document.getElementById('chkMingw').onchange = updateCompilers;
     document.getElementById('chkLinux').onchange = updateCompilers;
 
-    document.getElementById('txtStudentId').onchange = (e) => {
+    const txtSid = document.getElementById('txtStudentId');
+    txtSid.oninput = (e) => {
+      vscode.postMessage({ type: 'updateStudentId', studentId: e.target.value });
+    };
+    txtSid.onchange = (e) => {
       vscode.postMessage({ type: 'updateStudentId', studentId: e.target.value });
     };
 
@@ -906,7 +940,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     };
 
     document.getElementById('btnTestSSH').onclick = () => {
-      const sid = document.getElementById('txtStudentId').value;
+      const sid = (document.getElementById('txtStudentId').value || '').trim();
       vscode.postMessage({ type: 'testSSH', studentId: sid });
     };
 

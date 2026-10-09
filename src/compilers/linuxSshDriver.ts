@@ -36,11 +36,11 @@ export class LinuxSshDriver {
       : this.findDefaultPrivateKey();
 
     if (!keyPath || !fs.existsSync(keyPath)) {
-      throw new Error(`找不到 SSH 私钥文件 (已尝试 ~/.ssh/id_ed25519)。请在设置中指定。`);
+      throw new Error(`未找到私钥路径，请检查 %HOME%/.ssh 或者在设置中手动定位`);
     }
 
-    if (!config.studentId) {
-      throw new Error(`未配置学号！请在插件设置中填入学号（用户名格式为 u{学号}）。`);
+    if (!config.studentId || !config.studentId.trim()) {
+      throw new Error(`请输入学号！`);
     }
 
     const privateKey = fs.readFileSync(keyPath);
@@ -51,7 +51,7 @@ export class LinuxSshDriver {
       port: config.port || 22,
       username,
       privateKey,
-      readyTimeout: 7000,
+      readyTimeout: 6000,
     };
 
     if (config.passphrase) {
@@ -73,9 +73,21 @@ export class LinuxSshDriver {
       const conn = new Client();
       let finished = false;
 
+      const safetyTimer = setTimeout(() => {
+        if (!finished) {
+          finished = true;
+          try { conn.end(); } catch {}
+          resolve({
+            success: false,
+            message: `连接 ${connConfig.host}:${connConfig.port} 超时！请检查校园网/同济 VPN 是否已连通。`,
+          });
+        }
+      }, 7000);
+
       conn.on('ready', () => {
         conn.exec('uname -m && (gcc --version 2>/dev/null || c++ --version 2>/dev/null) | head -n 1', (err, stream) => {
           if (err) {
+            clearTimeout(safetyTimer);
             conn.end();
             return resolve({ success: true, message: `连接成功 (用户: ${connConfig.username})！但查询信息失败: ${err.message}` });
           }
@@ -83,6 +95,7 @@ export class LinuxSshDriver {
           let outBuf: Buffer[] = [];
           stream.on('data', (d: Buffer) => outBuf.push(d));
           stream.on('close', () => {
+            clearTimeout(safetyTimer);
             conn.end();
             if (!finished) {
               finished = true;
@@ -97,6 +110,7 @@ export class LinuxSshDriver {
       });
 
       conn.on('error', (err: any) => {
+        clearTimeout(safetyTimer);
         conn.end();
         if (!finished) {
           finished = true;
