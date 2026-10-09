@@ -62,6 +62,18 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
             this.selectedCompilers = data.compilers;
           }
           break;
+        case 'updateStudentId':
+          if (data.studentId !== undefined) {
+            const cfg = vscode.workspace.getConfiguration('sjoop');
+            await cfg.update('studentId', data.studentId.trim(), vscode.ConfigurationTarget.Global);
+          }
+          break;
+        case 'updateNormalizeNewlines':
+          if (data.normalizeNewlines !== undefined) {
+            const cfg = vscode.workspace.getConfiguration('sjoop');
+            await cfg.update('judge.normalizeNewlines', !!data.normalizeNewlines, vscode.ConfigurationTarget.Global);
+          }
+          break;
         case 'updateTestCases':
           if (data.testCases) {
             this.currentTestCases = data.testCases;
@@ -78,7 +90,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
           await this.handleRunBatch();
           break;
         case 'testSSH':
-          await this.handleTestSSH();
+          await this.handleTestSSH(data.studentId);
           break;
         case 'openSettings':
           vscode.commands.executeCommand('workbench.action.openSettings', 'sjoop');
@@ -86,7 +98,6 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       }
     });
 
-    // Update on view visibility
     webviewView.onDidChangeVisibility(() => {
       if (webviewView.visible) {
         this.refreshState();
@@ -142,6 +153,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     const mingwPath = config.get<string>('mingw.gppPath') || MingwDriver.findGpp();
     const studentId = config.get<string>('studentId', '');
     const sshKeyPath = config.get<string>('linux.privateKeyPath') || LinuxSshDriver.findDefaultPrivateKey();
+    const normalizeNewlines = config.get<boolean>('judge.normalizeNewlines', true);
 
     this._view.webview.postMessage({
       type: 'stateUpdate',
@@ -149,6 +161,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       fileName: this.currentFilePath ? path.basename(this.currentFilePath) : null,
       encodingInfo: encResult,
       compilers: this.selectedCompilers,
+      normalizeNewlines,
       compilerPaths: {
         msvc: msvcPath,
         mingw: mingwPath,
@@ -199,9 +212,9 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     this.refreshState();
   }
 
-  private async handleTestSSH() {
+  private async handleTestSSH(uiStudentId?: string) {
     const config = vscode.workspace.getConfiguration('sjoop');
-    const studentId = config.get<string>('studentId', '');
+    let studentId = uiStudentId ? uiStudentId.trim() : config.get<string>('studentId', '').trim();
 
     if (!studentId) {
       const inputId = await vscode.window.showInputBox({
@@ -209,36 +222,46 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         placeHolder: '例如: 2554207',
       });
       if (inputId) {
-        await config.update('studentId', inputId.trim(), vscode.ConfigurationTarget.Global);
+        studentId = inputId.trim();
+        await config.update('studentId', studentId, vscode.ConfigurationTarget.Global);
       } else {
         return;
       }
+    } else if (uiStudentId && uiStudentId !== config.get<string>('studentId', '')) {
+      await config.update('studentId', studentId, vscode.ConfigurationTarget.Global);
     }
 
-    const updatedConfig = vscode.workspace.getConfiguration('sjoop');
+    const host = config.get<string>('linux.host', '10.80.42.230');
+    const port = config.get<number>('linux.port', 22);
+
+    this._view?.webview.postMessage({
+      type: 'sshTestStart',
+      message: `正在连接 ${host}:${port} (用户: u${studentId})...`,
+    });
+
     const sshConf: SshConfig = {
-      host: updatedConfig.get<string>('linux.host', '10.80.42.230'),
-      port: updatedConfig.get<number>('linux.port', 22),
-      studentId: updatedConfig.get<string>('studentId', ''),
-      privateKeyPath: updatedConfig.get<string>('linux.privateKeyPath') || undefined,
-      remoteDir: updatedConfig.get<string>('linux.remoteDir', '~/sjoop_tmp'),
-      flags: updatedConfig.get<string[]>('linux.flags', []),
+      host,
+      port,
+      studentId,
+      privateKeyPath: config.get<string>('linux.privateKeyPath') || undefined,
+      remoteDir: config.get<string>('linux.remoteDir', '~/sjoop_tmp'),
+      flags: config.get<string[]>('linux.flags', []),
     };
 
-    vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: `正在连接 Linux 服务器 (${sshConf.host}:22)...`,
-      },
-      async () => {
-        const res = await LinuxSshDriver.testConnection(sshConf);
-        if (res.success) {
-          vscode.window.showInformationMessage(res.message);
-        } else {
-          vscode.window.showErrorMessage(res.message);
-        }
-      }
-    );
+    const res = await LinuxSshDriver.testConnection(sshConf);
+
+    this._view?.webview.postMessage({
+      type: 'sshTestResult',
+      success: res.success,
+      message: res.message,
+    });
+
+    if (res.success) {
+      vscode.window.showInformationMessage(res.message);
+    } else {
+      vscode.window.showErrorMessage(res.message);
+    }
+    this.refreshState();
   }
 
   private async handleRunBatch() {
@@ -260,24 +283,27 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       sources = [this.currentFilePath, ...this.currentProjectConfig.additionalFiles.filter(fs.existsSync)];
     }
 
-    // Check student ID if linux compiler selected
+    let studentId = config.get<string>('studentId', '').trim();
+
+    // Check compilers
     const activeCompilers: CompilerType[] = [];
     if (this.selectedCompilers.msvc) activeCompilers.push('msvc');
     if (this.selectedCompilers.mingw) activeCompilers.push('mingw');
     if (this.selectedCompilers.linux) {
-      activeCompilers.push('linux');
-      const sId = config.get<string>('studentId', '');
-      if (!sId) {
+      if (!studentId) {
         const inputId = await vscode.window.showInputBox({
           prompt: '检测到选中了 Linux 编译器，请输入学号 (用户名: u{学号})',
           placeHolder: '例如: 2554207',
         });
         if (inputId) {
-          await config.update('studentId', inputId.trim(), vscode.ConfigurationTarget.Global);
+          studentId = inputId.trim();
+          await config.update('studentId', studentId, vscode.ConfigurationTarget.Global);
         } else {
           vscode.window.showErrorMessage('未提供学号，已跳过 Linux 远程编译。');
-          activeCompilers.pop();
         }
+      }
+      if (studentId) {
+        activeCompilers.push('linux');
       }
     }
 
@@ -286,15 +312,17 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const updatedConfig = vscode.workspace.getConfiguration('sjoop');
     const sshConf: SshConfig = {
-      host: updatedConfig.get<string>('linux.host', '10.80.42.230'),
-      port: updatedConfig.get<number>('linux.port', 22),
-      studentId: updatedConfig.get<string>('studentId', ''),
-      privateKeyPath: updatedConfig.get<string>('linux.privateKeyPath') || undefined,
-      remoteDir: updatedConfig.get<string>('linux.remoteDir', '~/sjoop_tmp'),
-      flags: updatedConfig.get<string[]>('linux.flags', []),
+      host: config.get<string>('linux.host', '10.80.42.230'),
+      port: config.get<number>('linux.port', 22),
+      studentId: studentId,
+      privateKeyPath: config.get<string>('linux.privateKeyPath') || undefined,
+      remoteDir: config.get<string>('linux.remoteDir', '~/sjoop_tmp'),
+      flags: config.get<string[]>('linux.flags', []),
     };
+
+    const normalizeNewlines = config.get<boolean>('judge.normalizeNewlines', true);
+    const strictDiff = config.get<boolean>('judge.strictByteDiff', true);
 
     this._view?.webview.postMessage({ type: 'runStart' });
 
@@ -305,12 +333,13 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         outputBaseName: baseName,
         selectedCompilers: activeCompilers,
         testCases: this.currentTestCases,
-        timeoutMs: updatedConfig.get<number>('judge.timeoutMs', 5000),
-        strictDiff: updatedConfig.get<boolean>('judge.strictByteDiff', true),
-        msvcFlags: updatedConfig.get<string[]>('msvc.flags'),
-        customVcvars: updatedConfig.get<string>('msvc.vcvarsPath'),
-        mingwFlags: updatedConfig.get<string[]>('mingw.flags'),
-        customGpp: updatedConfig.get<string>('mingw.gppPath'),
+        timeoutMs: config.get<number>('judge.timeoutMs', 5000),
+        strictDiff,
+        normalizeNewlines,
+        msvcFlags: config.get<string[]>('msvc.flags'),
+        customVcvars: config.get<string>('msvc.vcvarsPath'),
+        mingwFlags: config.get<string[]>('mingw.flags'),
+        customGpp: config.get<string>('mingw.gppPath'),
         sshConfig: sshConf,
         onProgress: (msg) => {
           this._view?.webview.postMessage({ type: 'runProgress', message: msg });
@@ -403,7 +432,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 4px 0;
+      padding: 5px 0;
       border-bottom: 1px dashed rgba(255, 255, 255, 0.08);
     }
     .compiler-item:last-child { border-bottom: none; }
@@ -562,6 +591,20 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       </label>
       <button class="btn btn-small btn-secondary" id="btnTestSSH">测试连通</button>
     </div>
+    <!-- Student ID Field -->
+    <div style="display:flex; align-items:center; justify-content:space-between; padding: 6px 0; border-top: 1px dashed rgba(255,255,255,0.08); font-size:12px;">
+      <span>学号 (u{学号}):</span>
+      <input type="text" id="txtStudentId" style="width: 110px; padding: 3px 6px; background: var(--vscode-input-background, #1e1e1e); color: var(--vscode-input-foreground, #ccc); border: 1px solid var(--border); border-radius: 3px;" placeholder="例如: 2554207">
+    </div>
+    <div id="sshStatusArea" style="font-size: 11px; margin-top: 4px; display: none; padding: 4px; border-radius: 3px; background: rgba(0,0,0,0.2);"></div>
+  </div>
+
+  <!-- Run Options -->
+  <div style="margin: 6px 0 8px 0; padding: 0 4px;">
+    <label class="toggle-label" style="font-size: 11px;">
+      <input type="checkbox" id="chkNormalizeNewlines" checked>
+      <strong>统一换行符 (CRLF \r\n 与 LF \n 视为一致)</strong>
+    </label>
   </div>
 
   <!-- Action Run Button -->
@@ -608,6 +651,8 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       fileName: null,
       encodingInfo: null,
       compilers: { msvc: true, mingw: true, linux: false },
+      normalizeNewlines: true,
+      compilerPaths: { studentId: '' },
       projectConfig: { mode: 'single', mainFile: '', additionalFiles: [] },
       testCases: [],
       lastRunResult: null,
@@ -622,6 +667,20 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         case 'stateUpdate':
           state = { ...state, ...msg };
           renderUI();
+          break;
+        case 'sshTestStart':
+          const startArea = document.getElementById('sshStatusArea');
+          startArea.style.display = 'block';
+          startArea.style.color = '#e2a03f';
+          startArea.innerText = msg.message;
+          document.getElementById('btnTestSSH').disabled = true;
+          break;
+        case 'sshTestResult':
+          const resArea = document.getElementById('sshStatusArea');
+          resArea.style.display = 'block';
+          resArea.style.color = msg.success ? '#4ec9b0' : '#f14c4c';
+          resArea.innerText = (msg.success ? '✅ ' : '❌ ') + msg.message;
+          document.getElementById('btnTestSSH').disabled = false;
           break;
         case 'runStart':
           document.getElementById('progressText').innerText = '开始编译任务...';
@@ -687,6 +746,17 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       document.getElementById('chkMingw').checked = !!state.compilers.mingw;
       document.getElementById('chkLinux').checked = !!state.compilers.linux;
 
+      // Student ID
+      const sidInput = document.getElementById('txtStudentId');
+      if (state.compilerPaths && state.compilerPaths.studentId !== undefined) {
+        if (document.activeElement !== sidInput) {
+          sidInput.value = state.compilerPaths.studentId;
+        }
+      }
+
+      // Normalize Newlines
+      document.getElementById('chkNormalizeNewlines').checked = state.normalizeNewlines !== false;
+
       // 4. Test Cases
       renderCases();
 
@@ -714,7 +784,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
           </div>
           <div style="font-size: 11px; margin-bottom: 2px;">输入 (stdin):</div>
           <textarea onchange="updateCaseInput('\${tc.id}', this.value)">\${tc.input}</textarea>
-          <div style="font-size: 11px; margin: 4px 0 2px 0;">期望输出 (stdout 严格逐字节比对):</div>
+          <div style="font-size: 11px; margin: 4px 0 2px 0;">期望输出 (stdout):</div>
           <textarea onchange="updateCaseOutput('\${tc.id}', this.value)">\${tc.expectedOutput}</textarea>
         \`;
         container.appendChild(box);
@@ -826,7 +896,20 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     document.getElementById('chkMingw').onchange = updateCompilers;
     document.getElementById('chkLinux').onchange = updateCompilers;
 
-    document.getElementById('btnTestSSH').onclick = () => vscode.postMessage({ type: 'testSSH' });
+    document.getElementById('txtStudentId').onchange = (e) => {
+      vscode.postMessage({ type: 'updateStudentId', studentId: e.target.value });
+    };
+
+    document.getElementById('chkNormalizeNewlines').onchange = (e) => {
+      state.normalizeNewlines = e.target.checked;
+      vscode.postMessage({ type: 'updateNormalizeNewlines', normalizeNewlines: e.target.checked });
+    };
+
+    document.getElementById('btnTestSSH').onclick = () => {
+      const sid = document.getElementById('txtStudentId').value;
+      vscode.postMessage({ type: 'testSSH', studentId: sid });
+    };
+
     document.getElementById('btnSettings').onclick = () => vscode.postMessage({ type: 'openSettings' });
     document.getElementById('btnRunBatch').onclick = () => vscode.postMessage({ type: 'runBatch' });
 

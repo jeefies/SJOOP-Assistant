@@ -139,7 +139,8 @@ export class MingwDriver {
     binaryPath: string,
     testCase: TestCase,
     timeoutMs: number = 5000,
-    strictDiff: boolean = true
+    strictDiff: boolean = true,
+    normalizeNewlines: boolean = true
   ): Promise<SingleRunResult> {
     return new Promise((resolve) => {
       const startTime = Date.now();
@@ -197,7 +198,7 @@ export class MingwDriver {
           });
         }
 
-        const diff = compareBytesStrict(actualBytes, expectedBytes, 'gb18030');
+        const diff = compareBytesStrict(actualBytes, expectedBytes, 'gb18030', normalizeNewlines);
         resolve({
           testCaseId: testCase.id,
           compiler: 'mingw',

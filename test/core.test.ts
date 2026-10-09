@@ -91,10 +91,18 @@ describe('SJOOP Core Modules Test Suite', () => {
       assert.strictEqual(diff.firstDiffOffset, -1);
     });
 
-    it('should report WA on newline difference (\\r\\n vs \\n)', () => {
+    it('should accept CRLF vs LF as AC when normalizeNewlines is true', () => {
+      const bufActual = Buffer.from('Hello\r\nWorld\r\n', 'ascii');
+      const bufExpected = Buffer.from('Hello\nWorld\n', 'ascii');
+      const diff = compareBytesStrict(bufActual, bufExpected, 'gb18030', true);
+      assert.strictEqual(diff.matched, true);
+      assert.ok(diff.message.includes('已自动统一 CRLF 与 LF 换行符'));
+    });
+
+    it('should report WA on newline difference when normalizeNewlines is false', () => {
       const bufActual = Buffer.from('Hello\r\n', 'ascii');
       const bufExpected = Buffer.from('Hello\n', 'ascii');
-      const diff = compareBytesStrict(bufActual, bufExpected, 'gb18030');
+      const diff = compareBytesStrict(bufActual, bufExpected, 'gb18030', false);
       assert.strictEqual(diff.matched, false);
       assert.strictEqual(diff.firstDiffOffset, 5);
       assert.strictEqual(diff.actualByte, 0x0d);
@@ -176,7 +184,7 @@ describe('SJOOP Core Modules Test Suite', () => {
         id: '1',
         name: 'test',
         input: '10 20\n',
-        expectedOutput: process.platform === 'win32' ? '求和: 30\r\n' : '求和: 30\n',
+        expectedOutput: '求和: 30\n',
         enabled: true,
       });
 
@@ -199,7 +207,7 @@ describe('SJOOP Core Modules Test Suite', () => {
         id: '1',
         name: 'test',
         input: '10 20\n',
-        expectedOutput: process.platform === 'win32' ? '求和: 30\r\n' : '求和: 30\n',
+        expectedOutput: '求和: 30\n',
         enabled: true,
       });
 

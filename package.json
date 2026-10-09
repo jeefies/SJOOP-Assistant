@@ -175,10 +175,15 @@
           "default": 5000,
           "description": "程序执行超时时间限制（毫秒）"
         },
+        "sjoop.judge.normalizeNewlines": {
+          "type": "boolean",
+          "default": true,
+          "description": "自动归一化换行符（将 \\r\\n 与 \\n 视为一致，解决 Windows 与 Linux 换行符差异）"
+        },
         "sjoop.judge.strictByteDiff": {
           "type": "boolean",
           "default": true,
-          "description": "严格逐字节对比输出结果（包含 \\r\\n 与 \\n 换行符及空白符差异）"
+          "description": "严格逐字节对比输出结果（若开启归一化换行符，则对归一化后的字节严格逐字节比对）"
         }
       }
     }
