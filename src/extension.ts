@@ -2,10 +2,14 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { SidebarWebviewProvider } from './webview/sidebarWebviewProvider';
 import { checkFileEncoding, convertFileToGB18030 } from './encoding/encodingGuard';
+import { initLogger, log, showLog } from './logger';
 
 let statusBarItem: vscode.StatusBarItem;
 
 export function activate(context: vscode.Context) {
+  initLogger(context);
+  log('SJOOP Assistant 扩展已成功激活。');
+
   const provider = new SidebarWebviewProvider(context.extensionUri);
 
   // Register Webview View in secondary sidebar
@@ -126,6 +130,10 @@ export function activate(context: vscode.Context) {
 
     vscode.commands.registerCommand('sjoop.openSettings', () => {
       vscode.commands.executeCommand('workbench.action.openSettings', 'sjoop');
+    }),
+
+    vscode.commands.registerCommand('sjoop.showLogs', () => {
+      showLog();
     }),
 
     vscode.commands.registerCommand('sjoop.buildAndRun', async () => {

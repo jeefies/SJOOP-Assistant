@@ -212,7 +212,7 @@ export class LinuxSshDriver {
             await new Promise<void>((uploadRes, uploadRej) => {
               const ws = sftp.createWriteStream(remotePath);
               ws.on('close', () => uploadRes());
-              ws.on('error', (e) => uploadRej(e));
+              ws.on('error', (e: any) => uploadRej(e));
               ws.end(fileBuf);
             }).catch(() => {
               // fallback upload command if sftp stream fails

@@ -2,12 +2,13 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { TestCase, ProjectConfig, CompilerType } from '../types';
-import { checkFileEncoding, convertFileToGB18030 } from '../encoding/encodingGuard';
+import { checkFileEncoding, convertFileToGB18030, getSystemEncoding } from '../encoding/encodingGuard';
 import { CaseManager } from '../storage/caseManager';
 import { MsvcDriver } from '../compilers/msvcDriver';
 import { MingwDriver } from '../compilers/mingwDriver';
 import { LinuxSshDriver, SshConfig } from '../compilers/linuxSshDriver';
 import { CompilerRunner, BatchRunResult } from '../compilers/runner';
+import { log, showLog, logError } from '../logger';
 
 export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'sjoop.sidebarView';
@@ -120,6 +121,9 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         case 'openSettings':
           vscode.commands.executeCommand('workbench.action.openSettings', 'sjoop');
           break;
+        case 'showLogs':
+          showLog();
+          break;
       }
     });
 
@@ -206,11 +210,14 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     const normalizeNewlines = config.get<boolean>('judge.normalizeNewlines', true);
 
     const displayFile = fileToCheck;
+    const systemEncoding = getSystemEncoding();
+    log(`Webview 状态刷新: file=${displayFile || '无'}, sysEnc=${systemEncoding}, targetEncoding=${encodingTarget}`);
 
     this._view.webview.postMessage({
       type: 'stateUpdate',
       filePath: displayFile,
       fileName: displayFile ? path.basename(displayFile) : null,
+      systemEncoding,
       encodingInfo: encResult,
       compilers: this.selectedCompilers,
       normalizeNewlines,
@@ -488,9 +495,14 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private _getHtmlForWebview(_webview: vscode.Webview): string {
-    const config = vscode.workspace.getConfiguration('sjoop');
-    const existingStudentId = (config.get<string>('studentId', '') || '').trim();
+  public _getHtmlForWebview(_webview?: vscode.Webview): string {
+    let existingStudentId = '';
+    try {
+      const config = vscode.workspace.getConfiguration('sjoop');
+      existingStudentId = (config.get<string>('studentId', '') || '').trim();
+    } catch {
+      // ignore
+    }
 
     return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -671,8 +683,9 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       <div>
         <strong id="activeFileName" style="font-size: 13px;">未打开 C/C++ 文件</strong>
       </div>
-      <div id="encodingBadgeContainer">
+      <div id="encodingBadgeContainer" style="display: flex; gap: 6px; align-items: center;">
         <span class="badge badge-warn" id="encodingBadge">未知编码</span>
+        <button class="btn btn-small btn-secondary" id="btnShowLogs" title="打开 SJOOP 运行日志">日志</button>
       </div>
     </div>
     <div id="encodingAlert" style="display:none; font-size: 11px; color: #f14c4c; margin-top: 4px;">
@@ -783,9 +796,20 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
 
   <script>
     const vscode = acquireVsCodeApi();
+
+    // Error boundary for webview UI debugging
+    window.onerror = function(message, source, lineno, colno, error) {
+      console.error('SJOOP UI Exception:', message, 'at line', lineno, error);
+      const prog = document.getElementById('progressText');
+      if (prog) {
+        prog.textContent = '界面异常: ' + message;
+      }
+    };
+
     let state = {
       filePath: null,
       fileName: null,
+      systemEncoding: '检测中...',
       encodingInfo: null,
       compilers: { msvc: true, mingw: true, linux: false },
       normalizeNewlines: true,
@@ -808,15 +832,15 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
 
       if (status === 'loading') {
         el.style.color = '#e2a03f';
-        el.innerText = '⏳ ' + msg;
+        el.textContent = '⏳ ' + msg;
         btn.disabled = true;
       } else if (status === 'success') {
         el.style.color = '#4ec9b0';
-        el.innerText = '✅ ' + msg;
+        el.textContent = '✅ ' + msg;
         btn.disabled = false;
       } else {
         el.style.color = '#f14c4c';
-        el.innerText = '❌ ' + msg;
+        el.textContent = '❌ ' + msg;
         btn.disabled = false;
       }
 
@@ -825,7 +849,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
           el.style.opacity = '0';
           setTimeout(() => {
             el.style.display = 'none';
-            el.innerText = '';
+            el.textContent = '';
           }, 300);
           sshStatusTimer = null;
         }, autoClearMs);
@@ -839,10 +863,10 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         clearTimeout(progressTimer);
         progressTimer = null;
       }
-      el.innerText = msg;
+      el.textContent = msg;
       if (autoClearMs > 0 && msg) {
         progressTimer = setTimeout(() => {
-          el.innerText = '';
+          el.textContent = '';
           progressTimer = null;
         }, autoClearMs);
       }
@@ -892,22 +916,33 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
 
     function renderUI() {
       // 1. Header & Encoding
-      document.getElementById('activeFileName').innerText = state.fileName || '未打开 C/C++ 文件';
+      document.getElementById('activeFileName').textContent = state.fileName || '未打开 C/C++ 文件';
+
+      const sysText = document.getElementById('systemEncText');
+      if (sysText) {
+        const sysEnc = state.systemEncoding || (state.encodingInfo && state.encodingInfo.systemEncoding) || 'CP936';
+        sysText.textContent = '系统代码页: ' + sysEnc;
+      }
+
+      const badge = document.getElementById('encodingBadge');
+      const alertBox = document.getElementById('encodingAlert');
       if (state.encodingInfo) {
-        const badge = document.getElementById('encodingBadge');
-        const alertBox = document.getElementById('encodingAlert');
-        const sysText = document.getElementById('systemEncText');
-
-        sysText.innerText = '系统代码页: ' + (state.encodingInfo.systemEncoding || 'CP936');
-
         if (state.encodingInfo.isTargetEncoding) {
           badge.className = 'badge badge-ok';
-          badge.innerText = state.encodingInfo.encoding.toUpperCase() + ' ✅';
+          badge.textContent = state.encodingInfo.encoding.toUpperCase() + ' ✅';
           alertBox.style.display = 'none';
         } else {
           badge.className = 'badge badge-warn';
-          badge.innerText = state.encodingInfo.encoding.toUpperCase() + ' ⚠️';
+          badge.textContent = state.encodingInfo.encoding.toUpperCase() + ' ⚠️';
           alertBox.style.display = 'block';
+        }
+      } else {
+        if (badge) {
+          badge.className = 'badge badge-secondary';
+          badge.textContent = '无活动文件';
+        }
+        if (alertBox) {
+          alertBox.style.display = 'none';
         }
       }
 
@@ -919,9 +954,9 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
 
       if (isMulti) {
         const mainPath = state.projectConfig.mainFile || state.filePath || '';
-        document.getElementById('mainFileName').innerText = mainPath ? mainPath.split(/[\\/]/).pop() : '未指定';
+        document.getElementById('mainFileName').textContent = mainPath ? mainPath.split(/[\\/]/).pop() : '未指定';
         const addFiles = state.projectConfig.additionalFiles || [];
-        document.getElementById('sourceFileCount').innerText = addFiles.length;
+        document.getElementById('sourceFileCount').textContent = addFiles.length;
 
         // Source file list
         const ul = document.getElementById('sourceFileList');
@@ -929,8 +964,15 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         addFiles.forEach(f => {
           const li = document.createElement('li');
           li.className = 'source-item';
-          const baseName = f.split(/[\\/]/).pop();
-          li.innerHTML = '<span title="' + escapeHtml(f) + '">' + escapeHtml(baseName) + '</span><button class="btn btn-small btn-secondary" onclick="removeSource(\'' + encodeURIComponent(f) + '\')">移除</button>';
+          const span = document.createElement('span');
+          span.title = f;
+          span.textContent = f.split(/[\\/]/).pop() || f;
+          const btn = document.createElement('button');
+          btn.className = 'btn btn-small btn-secondary';
+          btn.textContent = '移除';
+          btn.onclick = () => removeSource(f);
+          li.appendChild(span);
+          li.appendChild(btn);
           ul.appendChild(li);
         });
       }
@@ -963,24 +1005,56 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     function renderCases() {
       const container = document.getElementById('caseListContainer');
       container.innerHTML = '';
-      document.getElementById('caseCount').innerText = state.testCases.length;
+      document.getElementById('caseCount').textContent = state.testCases.length;
 
       state.testCases.forEach((tc, idx) => {
         const box = document.createElement('div');
         box.className = 'case-box';
-        box.innerHTML = \`
-          <div class="case-header">
-            <label class="toggle-label">
-              <input type="checkbox" \${tc.enabled ? 'checked' : ''} onchange="toggleCase('\${tc.id}', this.checked)">
-              <strong>\${tc.name || ('测试点 #' + (idx + 1))}</strong>
-            </label>
-            <button class="btn btn-small btn-secondary" onclick="deleteCase('\${tc.id}')">删除</button>
-          </div>
-          <div style="font-size: 11px; margin-bottom: 2px;">输入 (stdin):</div>
-          <textarea onchange="updateCaseInput('\${tc.id}', this.value)">\${tc.input}</textarea>
-          <div style="font-size: 11px; margin: 4px 0 2px 0;">期望输出 (stdout):</div>
-          <textarea onchange="updateCaseOutput('\${tc.id}', this.value)">\${tc.expectedOutput}</textarea>
-        \`;
+
+        const header = document.createElement('div');
+        header.className = 'case-header';
+
+        const label = document.createElement('label');
+        label.className = 'toggle-label';
+        const chk = document.createElement('input');
+        chk.type = 'checkbox';
+        chk.checked = !!tc.enabled;
+        chk.onchange = (e) => toggleCase(tc.id, e.target.checked);
+        const nameStrong = document.createElement('strong');
+        nameStrong.textContent = tc.name || ('测试点 #' + (idx + 1));
+        label.appendChild(chk);
+        label.appendChild(nameStrong);
+
+        const btnDel = document.createElement('button');
+        btnDel.className = 'btn btn-small btn-secondary';
+        btnDel.textContent = '删除';
+        btnDel.onclick = () => deleteCase(tc.id);
+
+        header.appendChild(label);
+        header.appendChild(btnDel);
+
+        const inLabel = document.createElement('div');
+        inLabel.style.fontSize = '11px';
+        inLabel.style.marginBottom = '2px';
+        inLabel.textContent = '输入 (stdin):';
+        const inArea = document.createElement('textarea');
+        inArea.value = tc.input || '';
+        inArea.onchange = (e) => updateCaseInput(tc.id, e.target.value);
+
+        const outLabel = document.createElement('div');
+        outLabel.style.fontSize = '11px';
+        outLabel.style.margin = '4px 0 2px 0';
+        outLabel.textContent = '期望输出 (stdout):';
+        const outArea = document.createElement('textarea');
+        outArea.value = tc.expectedOutput || '';
+        outArea.onchange = (e) => updateCaseOutput(tc.id, e.target.value);
+
+        box.appendChild(header);
+        box.appendChild(inLabel);
+        box.appendChild(inArea);
+        box.appendChild(outLabel);
+        box.appendChild(outArea);
+
         container.appendChild(box);
       });
     }
@@ -994,23 +1068,38 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       state.testCases.forEach(tc => {
         if (!tc.enabled) return;
         const tr = document.createElement('tr');
-        tr.innerHTML = '<td><strong>' + (tc.name || tc.id) + '</strong></td>';
+        const tdName = document.createElement('td');
+        const strong = document.createElement('strong');
+        strong.textContent = tc.name || tc.id;
+        tdName.appendChild(strong);
+        tr.appendChild(tdName);
 
         ['msvc', 'mingw', 'linux'].forEach(comp => {
-          const runList = result.runs[comp] || [];
+          const tdComp = document.createElement('td');
+          const runList = (result.runs && result.runs[comp]) || [];
           const run = runList.find(r => r.testCaseId === tc.id);
-          const compRes = result.compilations[comp];
+          const compRes = result.compilations && result.compilations[comp];
 
-          let pillHtml = '<span style="color:#666;">-</span>';
-          if (state.compilers[comp]) {
+          if (state.compilers && state.compilers[comp]) {
             if (compRes && !compRes.success) {
-              pillHtml = '<span class="pill pill-ce" onclick="showCeDetail(\\'' + comp + '\\')">CE</span>';
+              const pill = document.createElement('span');
+              pill.className = 'pill pill-ce';
+              pill.textContent = 'CE';
+              pill.onclick = () => showCeDetail(comp);
+              tdComp.appendChild(pill);
             } else if (run) {
-              const cls = 'pill pill-' + run.status.toLowerCase();
-              pillHtml = '<span class="' + cls + '" onclick="showRunDetail(\\'' + comp + '\\', \\'' + tc.id + '\\')">' + run.status + ' (' + run.timeMs + 'ms)</span>';
+              const pill = document.createElement('span');
+              pill.className = 'pill pill-' + run.status.toLowerCase();
+              pill.textContent = run.status + ' (' + run.timeMs + 'ms)';
+              pill.onclick = () => showRunDetail(comp, tc.id);
+              tdComp.appendChild(pill);
+            } else {
+              tdComp.innerHTML = '<span style="color:#666;">-</span>';
             }
+          } else {
+            tdComp.innerHTML = '<span style="color:#666;">-</span>';
           }
-          tr.innerHTML += '<td>' + pillHtml + '</td>';
+          tr.appendChild(tdComp);
         });
 
         body.appendChild(tr);
@@ -1022,10 +1111,10 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       const modal = document.getElementById('detailModal');
       const title = document.getElementById('modalTitle');
       const content = document.getElementById('modalContent');
-      const compRes = state.lastRunResult.compilations[compiler];
+      const compRes = state.lastRunResult && state.lastRunResult.compilations && state.lastRunResult.compilations[compiler];
 
-      title.innerText = compiler.toUpperCase() + ' 编译错误 (CE)';
-      content.innerHTML = '<div class="diff-block" style="color:#f14c4c;">' + escapeHtml(compRes.errorMessage || '未知编译错误') + '</div>';
+      title.textContent = compiler.toUpperCase() + ' 编译错误 (CE)';
+      content.innerHTML = '<div class="diff-block" style="color:#f14c4c;">' + escapeHtml(compRes ? compRes.errorMessage || '未知编译错误' : '无详细报错') + '</div>';
       modal.style.display = 'block';
     };
 
@@ -1033,15 +1122,15 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       const modal = document.getElementById('detailModal');
       const title = document.getElementById('modalTitle');
       const content = document.getElementById('modalContent');
-      const run = (state.lastRunResult.runs[compiler] || []).find(r => r.testCaseId === caseId);
+      const run = state.lastRunResult && state.lastRunResult.runs && (state.lastRunResult.runs[compiler] || []).find(r => r.testCaseId === caseId);
       const tc = state.testCases.find(c => c.id === caseId);
 
       if (!run) return;
-      title.innerText = (tc ? tc.name : caseId) + ' - ' + compiler.toUpperCase() + ' 详情 (' + run.status + ')';
+      title.textContent = (tc ? tc.name : caseId) + ' - ' + compiler.toUpperCase() + ' 详情 (' + run.status + ')';
 
       let html = '<div style="margin-bottom: 6px;">耗时: ' + run.timeMs + 'ms | 退出码: ' + run.exitCode + '</div>';
       if (run.byteDiff && !run.byteDiff.matched) {
-        html += '<div style="color: #f14c4c; font-weight: bold; margin-bottom: 4px;">' + run.byteDiff.message + '</div>';
+        html += '<div style="color: #f14c4c; font-weight: bold; margin-bottom: 4px;">' + escapeHtml(run.byteDiff.message) + '</div>';
         html += '<div style="font-size: 10px; margin-bottom: 2px;">期望上下文:</div>';
         html += '<div class="diff-block" style="color: #4ec9b0;">' + escapeHtml(run.byteDiff.expectedContext || '') + '</div>';
         html += '<div style="font-size: 10px; margin: 4px 0 2px 0;">实际得到上下文:</div>';
@@ -1064,6 +1153,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     // Event Listeners
+    document.getElementById('btnShowLogs').onclick = () => vscode.postMessage({ type: 'showLogs' });
     document.getElementById('btnConvert').onclick = () => vscode.postMessage({ type: 'convertEncoding' });
     document.getElementById('btnModeSingle').onclick = () => {
       state.projectConfig.mode = 'single';
@@ -1076,8 +1166,8 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       renderUI();
     };
     document.getElementById('btnAddSource').onclick = () => vscode.postMessage({ type: 'addAdditionalFile' });
-    window.removeSource = function(encodedPath) {
-      vscode.postMessage({ type: 'removeAdditionalFile', filePath: decodeURIComponent(encodedPath) });
+    window.removeSource = function(targetPath) {
+      vscode.postMessage({ type: 'removeAdditionalFile', filePath: targetPath });
     };
 
     function updateCompilers() {
