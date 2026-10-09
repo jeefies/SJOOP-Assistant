@@ -131,7 +131,16 @@ export class LinuxSshDriver {
         }
       });
 
-      conn.connect(connConfig);
+      try {
+        conn.connect(connConfig);
+      } catch (err: any) {
+        clearTimeout(safetyTimer);
+        try { conn.end(); } catch {}
+        if (!finished) {
+          finished = true;
+          resolve({ success: false, message: `SSH 连接启动失败: ${err.message}` });
+        }
+      }
     });
   }
 

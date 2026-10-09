@@ -212,92 +212,104 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     this.refreshState();
   }
 
-  private async handleTestSSH(uiStudentId?: string) {
-    const config = vscode.workspace.getConfiguration('sjoop');
-    let studentId = (uiStudentId !== undefined && uiStudentId.trim() !== '')
-      ? uiStudentId.trim()
-      : config.get<string>('studentId', '').trim();
+  public async handleTestSSH(uiStudentId?: string) {
+    try {
+      const config = vscode.workspace.getConfiguration('sjoop');
+      let studentId = (uiStudentId !== undefined && uiStudentId.trim() !== '')
+        ? uiStudentId.trim()
+        : config.get<string>('studentId', '').trim();
 
-    // 1. 检查学号配置
-    if (!studentId) {
-      const msg = '请输入学号！';
-      vscode.window.showErrorMessage(msg);
-      this._view?.webview.postMessage({
-        type: 'sshTestResult',
-        success: false,
-        message: msg,
-      });
-      return;
-    }
-
-    // 学号输入后持久化保存
-    await config.update('studentId', studentId, vscode.ConfigurationTarget.Global);
-
-    // 2. 检查 SSH 私钥
-    const customKey = (config.get<string>('linux.privateKeyPath') || '').trim();
-    const keyPath = (customKey && fs.existsSync(customKey)) ? customKey : LinuxSshDriver.findDefaultPrivateKey();
-    if (!keyPath || !fs.existsSync(keyPath)) {
-      const msg = '未找到私钥路径，请检查 %HOME%/.ssh 或者在设置中手动定位';
-      vscode.window.showErrorMessage(msg);
-      this._view?.webview.postMessage({
-        type: 'sshTestResult',
-        success: false,
-        message: msg,
-      });
-      return;
-    }
-
-    // 3. 检查服务器地址
-    const host = (config.get<string>('linux.host') || '10.80.42.230').trim();
-    const port = config.get<number>('linux.port', 22);
-    if (!host) {
-      const msg = '未配置 Linux 服务器地址 (默认: 10.80.42.230)';
-      vscode.window.showErrorMessage(msg);
-      this._view?.webview.postMessage({ type: 'sshTestResult', success: false, message: msg });
-      return;
-    }
-
-    this._view?.webview.postMessage({
-      type: 'sshTestStart',
-      message: `正在连接 ${host}:${port} (用户: u${studentId})...`,
-    });
-
-    const sshConf: SshConfig = {
-      host,
-      port,
-      studentId,
-      privateKeyPath: keyPath,
-      remoteDir: config.get<string>('linux.remoteDir', '~/sjoop_tmp'),
-      flags: config.get<string[]>('linux.flags', []),
-    };
-
-    const res = await vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: `SJOOP: 正在连接 Linux 服务器 (${host}:${port})...`,
-      },
-      async () => {
-        return await LinuxSshDriver.testConnection(sshConf);
+      // 1. 检查学号配置
+      if (!studentId) {
+        const msg = '请输入学号！';
+        vscode.window.showErrorMessage(msg);
+        this._view?.webview.postMessage({
+          type: 'sshTestResult',
+          success: false,
+          message: msg,
+        });
+        return;
       }
-    );
 
-    this._view?.webview.postMessage({
-      type: 'sshTestResult',
-      success: res.success,
-      message: res.message,
-    });
+      // 学号输入后持久化保存
+      await config.update('studentId', studentId, vscode.ConfigurationTarget.Global);
 
-    if (res.success) {
-      vscode.window.showInformationMessage(res.message);
-    } else {
-      vscode.window.showErrorMessage(res.message);
+      // 2. 检查 SSH 私钥
+      const customKey = (config.get<string>('linux.privateKeyPath') || '').trim();
+      const keyPath = (customKey && fs.existsSync(customKey)) ? customKey : LinuxSshDriver.findDefaultPrivateKey();
+      if (!keyPath || !fs.existsSync(keyPath)) {
+        const msg = '未找到私钥路径，请检查 %HOME%/.ssh 或者在设置中手动定位';
+        vscode.window.showErrorMessage(msg);
+        this._view?.webview.postMessage({
+          type: 'sshTestResult',
+          success: false,
+          message: msg,
+        });
+        return;
+      }
+
+      // 3. 检查服务器地址
+      const host = (config.get<string>('linux.host') || '10.80.42.230').trim();
+      const port = config.get<number>('linux.port', 22);
+      if (!host) {
+        const msg = '未配置 Linux 服务器地址 (默认: 10.80.42.230)';
+        vscode.window.showErrorMessage(msg);
+        this._view?.webview.postMessage({ type: 'sshTestResult', success: false, message: msg });
+        return;
+      }
+
+      this._view?.webview.postMessage({
+        type: 'sshTestStart',
+        message: `正在连接 ${host}:${port} (用户: u${studentId})...`,
+      });
+
+      const sshConf: SshConfig = {
+        host,
+        port,
+        studentId,
+        privateKeyPath: keyPath,
+        remoteDir: config.get<string>('linux.remoteDir', '~/sjoop_tmp'),
+        flags: config.get<string[]>('linux.flags', []),
+      };
+
+      const res = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `SJOOP: 正在连接 Linux 服务器 (${host}:${port})...`,
+        },
+        async () => {
+          return await LinuxSshDriver.testConnection(sshConf);
+        }
+      );
+
+      this._view?.webview.postMessage({
+        type: 'sshTestResult',
+        success: res.success,
+        message: res.message,
+      });
+
+      if (res.success) {
+        vscode.window.showInformationMessage(res.message);
+      } else {
+        vscode.window.showErrorMessage(res.message);
+      }
+      this.refreshState();
+    } catch (err: any) {
+      const errMsg = `SSH 测试失败: ${err.message}`;
+      vscode.window.showErrorMessage(errMsg);
+      this._view?.webview.postMessage({
+        type: 'sshTestResult',
+        success: false,
+        message: errMsg,
+      });
     }
-    this.refreshState();
   }
 
-  private async handleRunBatch() {
+  public async handleRunBatch() {
     if (!this.currentFilePath) {
-      vscode.window.showWarningMessage('请先在编辑器中打开一个 C/C++ 源文件！');
+      const msg = '请先在编辑器中打开一个 C/C++ 源文件！';
+      vscode.window.showWarningMessage(msg);
+      this._view?.webview.postMessage({ type: 'runError', message: msg });
       return;
     }
 
@@ -322,20 +334,26 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     if (this.selectedCompilers.mingw) activeCompilers.push('mingw');
     if (this.selectedCompilers.linux) {
       if (!studentId) {
-        vscode.window.showErrorMessage('请输入学号！(使用 Linux 远程编译必须配置学号)');
+        const msg = '请输入学号！(使用 Linux 远程编译必须配置学号)';
+        vscode.window.showErrorMessage(msg);
+        this._view?.webview.postMessage({ type: 'runError', message: msg });
         return;
       }
       const customKey = (config.get<string>('linux.privateKeyPath') || '').trim();
       const keyPath = (customKey && fs.existsSync(customKey)) ? customKey : LinuxSshDriver.findDefaultPrivateKey();
       if (!keyPath || !fs.existsSync(keyPath)) {
-        vscode.window.showErrorMessage('未找到私钥路径，请检查 %HOME%/.ssh 或者在设置中手动定位');
+        const msg = '未找到私钥路径，请检查 %HOME%/.ssh 或者在设置中手动定位';
+        vscode.window.showErrorMessage(msg);
+        this._view?.webview.postMessage({ type: 'runError', message: msg });
         return;
       }
       activeCompilers.push('linux');
     }
 
     if (activeCompilers.length === 0) {
-      vscode.window.showWarningMessage('请至少勾选一个编译器！');
+      const msg = '请至少勾选一个编译器！';
+      vscode.window.showWarningMessage(msg);
+      this._view?.webview.postMessage({ type: 'runError', message: msg });
       return;
     }
 
@@ -626,7 +644,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       <span>学号 (u{学号}):</span>
       <input type="text" id="txtStudentId" style="width: 110px; padding: 3px 6px; background: var(--vscode-input-background, #1e1e1e); color: var(--vscode-input-foreground, #ccc); border: 1px solid var(--border); border-radius: 3px;" placeholder="例如: 2554207">
     </div>
-    <div id="sshStatusArea" style="font-size: 11px; margin-top: 4px; display: none; padding: 4px; border-radius: 3px; background: rgba(0,0,0,0.2);"></div>
+    <div id="sshStatusArea" style="font-size: 11px; margin-top: 6px; display: none; padding: 6px; border-radius: 4px; background: rgba(0,0,0,0.25); word-break: break-all; transition: opacity 0.3s ease;"></div>
   </div>
 
   <!-- Run Options -->
@@ -688,6 +706,59 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       lastRunResult: null,
     };
 
+    let sshStatusTimer = null;
+    function setSshStatus(msg, status, autoClearMs = 6000) {
+      const el = document.getElementById('sshStatusArea');
+      const btn = document.getElementById('btnTestSSH');
+      if (sshStatusTimer) {
+        clearTimeout(sshStatusTimer);
+        sshStatusTimer = null;
+      }
+      el.style.opacity = '1';
+      el.style.display = 'block';
+
+      if (status === 'loading') {
+        el.style.color = '#e2a03f';
+        el.innerText = '⏳ ' + msg;
+        btn.disabled = true;
+      } else if (status === 'success') {
+        el.style.color = '#4ec9b0';
+        el.innerText = '✅ ' + msg;
+        btn.disabled = false;
+      } else {
+        el.style.color = '#f14c4c';
+        el.innerText = '❌ ' + msg;
+        btn.disabled = false;
+      }
+
+      if (autoClearMs > 0 && status !== 'loading') {
+        sshStatusTimer = setTimeout(() => {
+          el.style.opacity = '0';
+          setTimeout(() => {
+            el.style.display = 'none';
+            el.innerText = '';
+          }, 300);
+          sshStatusTimer = null;
+        }, autoClearMs);
+      }
+    }
+
+    let progressTimer = null;
+    function setProgressText(msg, autoClearMs = 0) {
+      const el = document.getElementById('progressText');
+      if (progressTimer) {
+        clearTimeout(progressTimer);
+        progressTimer = null;
+      }
+      el.innerText = msg;
+      if (autoClearMs > 0 && msg) {
+        progressTimer = setTimeout(() => {
+          el.innerText = '';
+          progressTimer = null;
+        }, autoClearMs);
+      }
+    }
+
     // Notify backend ready
     vscode.postMessage({ type: 'ready' });
 
@@ -699,34 +770,26 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
           renderUI();
           break;
         case 'sshTestStart':
-          const startArea = document.getElementById('sshStatusArea');
-          startArea.style.display = 'block';
-          startArea.style.color = '#e2a03f';
-          startArea.innerText = msg.message;
-          document.getElementById('btnTestSSH').disabled = true;
+          setSshStatus(msg.message, 'loading', 0);
           break;
         case 'sshTestResult':
-          const resArea = document.getElementById('sshStatusArea');
-          resArea.style.display = 'block';
-          resArea.style.color = msg.success ? '#4ec9b0' : '#f14c4c';
-          resArea.innerText = (msg.success ? '✅ ' : '❌ ') + msg.message;
-          document.getElementById('btnTestSSH').disabled = false;
+          setSshStatus(msg.message, msg.success ? 'success' : 'error', 6000);
           break;
         case 'runStart':
-          document.getElementById('progressText').innerText = '开始编译任务...';
+          setProgressText('开始编译任务...', 0);
           document.getElementById('btnRunBatch').disabled = true;
           break;
         case 'runProgress':
-          document.getElementById('progressText').innerText = msg.message;
+          setProgressText(msg.message, 0);
           break;
         case 'runComplete':
-          document.getElementById('progressText').innerText = '测试完成！';
+          setProgressText('测试完成！', 5000);
           document.getElementById('btnRunBatch').disabled = false;
           state.lastRunResult = msg.result;
           renderResults(msg.result);
           break;
         case 'runError':
-          document.getElementById('progressText').innerText = '执行出错: ' + msg.message;
+          setProgressText('执行出错: ' + msg.message, 8000);
           document.getElementById('btnRunBatch').disabled = false;
           break;
       }
@@ -933,6 +996,11 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     txtSid.onchange = (e) => {
       vscode.postMessage({ type: 'updateStudentId', studentId: e.target.value });
     };
+    txtSid.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        document.getElementById('btnTestSSH').click();
+      }
+    };
 
     document.getElementById('chkNormalizeNewlines').onchange = (e) => {
       state.normalizeNewlines = e.target.checked;
@@ -941,6 +1009,13 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
 
     document.getElementById('btnTestSSH').onclick = () => {
       const sid = (document.getElementById('txtStudentId').value || '').trim();
+      if (!sid) {
+        setSshStatus('请输入学号！', 'error', 6000);
+        document.getElementById('txtStudentId').focus();
+        vscode.postMessage({ type: 'testSSH', studentId: '' });
+        return;
+      }
+      setSshStatus('正在连接 Linux 服务器 (10.80.42.230)...', 'loading', 0);
       vscode.postMessage({ type: 'testSSH', studentId: sid });
     };
 

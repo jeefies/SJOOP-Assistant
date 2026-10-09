@@ -126,6 +126,20 @@ export function activate(context: vscode.Context) {
 
     vscode.commands.registerCommand('sjoop.openSettings', () => {
       vscode.commands.executeCommand('workbench.action.openSettings', 'sjoop');
+    }),
+
+    vscode.commands.registerCommand('sjoop.buildAndRun', async () => {
+      await provider.handleRunBatch();
+    }),
+
+    vscode.commands.registerCommand('sjoop.testSSHConnection', async () => {
+      await provider.handleTestSSH();
+    }),
+
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('sjoop')) {
+        provider.refreshState();
+      }
     })
   );
 

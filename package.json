@@ -2,7 +2,7 @@
   "name": "sjoop-assistant",
   "displayName": "SJOOP Assistant (同济程序设计助手)",
   "description": "专为同济大学程序设计/OOP课程定制的VSCode辅助插件，支持MSVC/MinGW/Linux三编译器联动与GB18030编码守护。",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "jeefy",
   "engines": {
     "vscode": "^1.90.0"
