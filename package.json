@@ -1,0 +1,208 @@
+{
+  "name": "sjoop-assistant",
+  "displayName": "SJOOP Assistant (同济程序设计助手)",
+  "description": "专为同济大学程序设计/OOP课程定制的VSCode辅助插件，支持MSVC/MinGW/Linux三编译器联动与GB18030编码守护。",
+  "version": "0.1.0",
+  "publisher": "jeefy",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Testing",
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:c",
+    "onLanguage:cpp"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "secondarySideBar": [
+        {
+          "id": "sjoop-sidebar-container",
+          "title": "SJOOP 助手",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "sjoop-sidebar-container": [
+        {
+          "type": "webview",
+          "id": "sjoop.sidebarView",
+          "name": "OOP 作业辅助",
+          "when": "editorLangId == c || editorLangId == cpp || sjoop.active"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "sjoop.checkEncoding",
+        "title": "SJOOP: 检查当前文件编码"
+      },
+      {
+        "command": "sjoop.convertToGB18030",
+        "title": "SJOOP: 将当前文件转换为 GB18030 编码"
+      },
+      {
+        "command": "sjoop.buildAndRun",
+        "title": "SJOOP: 一键编译并运行测试"
+      },
+      {
+        "command": "sjoop.testSSHConnection",
+        "title": "SJOOP: 测试 Linux SSH 连通性"
+      },
+      {
+        "command": "sjoop.openSettings",
+        "title": "SJOOP: 打开配置面板"
+      }
+    ],
+    "configuration": {
+      "title": "SJOOP Assistant",
+      "properties": {
+        "sjoop.studentId": {
+          "type": "string",
+          "default": "",
+          "description": "同济大学学号，Linux SSH 将使用 u{学号} 作为登录用户名"
+        },
+        "sjoop.encoding.targetCharset": {
+          "type": "string",
+          "default": "gb18030",
+          "enum": [
+            "gb18030",
+            "gbk",
+            "utf-8"
+          ],
+          "description": "课程目标文件编码格式（SJ 课程红线强制要求 gb18030 / gbk）"
+        },
+        "sjoop.encoding.autoWarn": {
+          "type": "boolean",
+          "default": true,
+          "description": "当打开的源文件不是目标编码（如 UTF-8）时自动弹出警告并提示转换"
+        },
+        "sjoop.msvc.autoDetect": {
+          "type": "boolean",
+          "default": true,
+          "description": "自动探测本地 Visual Studio MSVC 安装路径及 vcvars64.bat"
+        },
+        "sjoop.msvc.vcvarsPath": {
+          "type": "string",
+          "default": "",
+          "description": "手动指定的 vcvars64.bat 或 vcvarsall.bat 路径（为空时自动探测）"
+        },
+        "sjoop.msvc.flags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "/nologo",
+            "/std:c++20",
+            "/EHsc",
+            "/permissive-",
+            "/W3",
+            "/MDd",
+            "/Od",
+            "/D",
+            "_DEBUG",
+            "/D",
+            "_CONSOLE",
+            "/source-charset:gb18030",
+            "/execution-charset:gb18030"
+          ],
+          "description": "MSVC 编译参数（默认还原 VS IDE 缺省 flags 并绑定 GB18030 字符集）"
+        },
+        "sjoop.mingw.autoDetect": {
+          "type": "boolean",
+          "default": true,
+          "description": "自动探测 RedPanda-CPP (小熊猫C++) / 系统 MinGW g++.exe"
+        },
+        "sjoop.mingw.gppPath": {
+          "type": "string",
+          "default": "",
+          "description": "手动指定的 MinGW g++.exe 路径（为空时自动探测）"
+        },
+        "sjoop.mingw.flags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "-Wall",
+            "-std=c++20",
+            "-finput-charset=GB18030",
+            "-fexec-charset=GB18030"
+          ],
+          "description": "MinGW g++ 编译参数（默认包含 GB18030 编码参数与 C++20）"
+        },
+        "sjoop.linux.host": {
+          "type": "string",
+          "default": "10.80.42.230",
+          "description": "Linux SSH 服务器主机名或内网 IP"
+        },
+        "sjoop.linux.port": {
+          "type": "number",
+          "default": 22,
+          "description": "Linux SSH 端口"
+        },
+        "sjoop.linux.privateKeyPath": {
+          "type": "string",
+          "default": "",
+          "description": "SSH 私钥文件路径（为空时自动在 ~/.ssh 中搜索 id_ed25519）"
+        },
+        "sjoop.linux.remoteDir": {
+          "type": "string",
+          "default": "~/sjoop_tmp",
+          "description": "远程 Linux 服务器存放编译代码的目录"
+        },
+        "sjoop.linux.flags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "-Wall",
+            "-std=c++20",
+            "-finput-charset=GB18030",
+            "-fexec-charset=GB18030"
+          ],
+          "description": "Linux C++ 远程编译参数"
+        },
+        "sjoop.judge.timeoutMs": {
+          "type": "number",
+          "default": 5000,
+          "description": "程序执行超时时间限制（毫秒）"
+        },
+        "sjoop.judge.strictByteDiff": {
+          "type": "boolean",
+          "default": true,
+          "description": "严格逐字节对比输出结果（包含 \\r\\n 与 \\n 换行符及空白符差异）"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "node esbuild.js --production",
+    "watch": "node esbuild.js --watch",
+    "test": "mocha --require ts-node/register --timeout 15000 test/**/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/iconv-lite": "^0.0.1",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.10.0",
+    "@types/ssh2": "^1.15.4",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.25.0",
+    "mocha": "^11.1.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3"
+  },
+  "dependencies": {
+    "chardet": "^2.0.0",
+    "iconv-lite": "^0.6.3",
+    "ssh2": "^1.16.0"
+  }
+}
