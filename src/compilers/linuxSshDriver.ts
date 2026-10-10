@@ -1,10 +1,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
-import { Client, ConnectConfig } from 'ssh2';
+import { Client, ConnectConfig, SFTPWrapper } from 'ssh2';
 import * as iconv from 'iconv-lite';
 import { CompileResult, SingleRunResult, TestCase } from '../types';
 import { compareBytesStrict } from '../judge/byteJudge';
+import { createHostVerifier, quotePosixArgument, validateHostKeyFingerprint, validateOutputBaseName } from '../security/sshSecurity';
+import { validateUploadSources } from '../security/uploadSources';
 
 export interface SshConfig {
   host: string;
@@ -12,53 +13,71 @@ export interface SshConfig {
   studentId: string;
   privateKeyPath?: string;
   passphrase?: string;
+  hostKeyFingerprint?: string;
+  workspaceRoot?: string;
   remoteDir: string;
   flags: string[];
 }
 
+interface RemoteCommandResult {
+  stdout: Buffer;
+  stderr: Buffer;
+  exitCode: number;
+}
+
 export class LinuxSshDriver {
-  public static findDefaultPrivateKey(): string | null {
-    const home = os.homedir();
-    const ed25519 = path.join(home, '.ssh', 'id_ed25519');
-    if (fs.existsSync(ed25519)) {
-      return ed25519;
+  /** Validate security settings before reading a private key or prompting for its passphrase. */
+  public static validateConnectionConfig(config: SshConfig): void {
+    validateHostKeyFingerprint(config.hostKeyFingerprint);
+    if (!config.privateKeyPath || !config.privateKeyPath.trim()) {
+      throw new Error('请明确选择本次 SSH 连接使用的私钥文件；不会自动使用默认私钥。');
     }
-    const rsa = path.join(home, '.ssh', 'id_rsa');
-    if (fs.existsSync(rsa)) {
-      return rsa;
+    if (!fs.existsSync(config.privateKeyPath) || !fs.statSync(config.privateKeyPath).isFile()) {
+      throw new Error('指定的私钥文件不存在或不是普通文件，请重新选择；不会改用其他私钥。');
     }
-    return null;
+    if (!config.studentId || !config.studentId.trim()) {
+      throw new Error('请输入学号！');
+    }
   }
 
   private static getConnectConfig(config: SshConfig): ConnectConfig {
-    const keyPath = (config.privateKeyPath && fs.existsSync(config.privateKeyPath))
-      ? config.privateKeyPath
-      : this.findDefaultPrivateKey();
-
-    if (!keyPath || !fs.existsSync(keyPath)) {
-      throw new Error(`未找到私钥路径，请检查 %HOME%/.ssh 或者在设置中手动定位`);
-    }
-
-    if (!config.studentId || !config.studentId.trim()) {
-      throw new Error(`请输入学号！`);
-    }
-
-    const privateKey = fs.readFileSync(keyPath);
-    const username = `u${config.studentId.trim().replace(/^u/i, '')}`;
-
+    this.validateConnectionConfig(config);
     const connConfig: ConnectConfig = {
       host: config.host || '10.80.42.230',
       port: config.port || 22,
-      username,
-      privateKey,
+      username: `u${config.studentId.trim().replace(/^u/i, '')}`,
+      privateKey: fs.readFileSync(config.privateKeyPath!),
+      // Do not set hostHash: the verifier hashes ssh2's raw public-key blob itself.
+      hostVerifier: createHostVerifier(config.hostKeyFingerprint),
       readyTimeout: 6000,
     };
-
-    if (config.passphrase) {
-      connConfig.passphrase = config.passphrase;
-    }
-
+    if (config.passphrase) connConfig.passphrase = config.passphrase;
     return connConfig;
+  }
+
+  private static execCommand(conn: Client, command: string): Promise<RemoteCommandResult> {
+    return new Promise((resolve, reject) => {
+      const onClosed = () => reject(new Error('SSH 连接在远程命令结束前关闭。'));
+      conn.once('close', onClosed);
+      conn.exec(command, (err, stream) => {
+        if (err) {
+          conn.removeListener('close', onClosed);
+          return reject(err);
+        }
+        const stdout: Buffer[] = [];
+        const stderr: Buffer[] = [];
+        stream.on('data', (data: Buffer) => stdout.push(data));
+        stream.stderr.on('data', (data: Buffer) => stderr.push(data));
+        stream.on('error', (error: Error) => {
+          conn.removeListener('close', onClosed);
+          reject(error);
+        });
+        stream.once('close', (code: number | undefined) => {
+          conn.removeListener('close', onClosed);
+          resolve({ stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr), exitCode: code ?? -1 });
+        });
+      });
+    });
   }
 
   public static testConnection(config: SshConfig): Promise<{ success: boolean; message: string }> {
@@ -69,350 +88,197 @@ export class LinuxSshDriver {
       } catch (err: any) {
         return resolve({ success: false, message: err.message });
       }
-
       const conn = new Client();
       let finished = false;
-
-      const safetyTimer = setTimeout(() => {
-        if (!finished) {
-          finished = true;
-          try { conn.end(); } catch {}
-          resolve({
-            success: false,
-            message: `连接 ${connConfig.host}:${connConfig.port} 超时！请检查校园网/同济 VPN 是否已连通。`,
-          });
-        }
-      }, 7000);
-
-      conn.on('ready', () => {
-        conn.exec('uname -m && (gcc --version 2>/dev/null || c++ --version 2>/dev/null) | head -n 1', (err, stream) => {
-          if (err) {
-            clearTimeout(safetyTimer);
-            conn.end();
-            return resolve({ success: true, message: `连接成功 (用户: ${connConfig.username})！但查询信息失败: ${err.message}` });
-          }
-
-          let outBuf: Buffer[] = [];
-          stream.on('data', (d: Buffer) => outBuf.push(d));
-          stream.on('close', () => {
-            clearTimeout(safetyTimer);
-            conn.end();
-            if (!finished) {
-              finished = true;
-              const info = iconv.decode(Buffer.concat(outBuf), 'gb18030').trim().replace(/\r?\n/g, ' | ');
-              resolve({
-                success: true,
-                message: `成功连通 10.80.42.230 (${connConfig.username})！\n服务器信息: ${info || 'Kunpeng 920'}`,
-              });
-            }
-          });
-        });
-      });
-
-      conn.on('error', (err: any) => {
+      const finish = (result: { success: boolean; message: string }) => {
+        if (finished) return;
+        finished = true;
         clearTimeout(safetyTimer);
         conn.end();
-        if (!finished) {
-          finished = true;
-          const msg = err.message || '';
-          if (msg.includes('ETIMEDOUT') || msg.includes('ENETUNREACH') || msg.includes('EHOSTUNREACH')) {
-            resolve({
-              success: false,
-              message: `无法连接到 ${connConfig.host}！\n如果是校外环境，请务必先登录同济大学 VPN！`,
+        resolve(result);
+      };
+      const address = `${connConfig.host}:${connConfig.port}`;
+      const safetyTimer = setTimeout(() => finish({
+        success: false,
+        message: `连接 ${address} 超时！请检查校园网/同济 VPN 是否已连通。`,
+      }), 7000);
+      conn.once('ready', () => {
+        this.execCommand(conn, 'uname -m && (gcc --version 2>/dev/null || c++ --version 2>/dev/null) | head -n 1')
+          .then((result) => {
+            const info = iconv.decode(result.stdout, 'gb18030').trim().replace(/\r?\n/g, ' | ');
+            finish({
+              success: true,
+              message: `成功连通 ${address} (${connConfig.username})！\n服务器信息: ${info || '查询信息失败'}`,
             });
-          } else if (msg.includes('authentication') || msg.includes('passphrase')) {
-            resolve({
-              success: false,
-              message: `SSH 认证失败: ${msg}。\n请确认学号及私钥/密码是否与交作业网站登记的一致。`,
-            });
-          } else {
-            resolve({ success: false, message: `SSH 连接出错: ${msg}` });
-          }
-        }
+          })
+          .catch((err: Error) => finish({ success: true, message: `连接 ${address} 成功 (用户: ${connConfig.username})！但查询信息失败: ${err.message}` }));
       });
-
+      conn.on('error', (err: Error) => finish({ success: false, message: `SSH 连接 ${address} 出错: ${err.message}` }));
+      conn.once('close', () => finish({ success: false, message: `SSH 连接 ${address} 已关闭。` }));
       try {
         conn.connect(connConfig);
       } catch (err: any) {
-        clearTimeout(safetyTimer);
-        try { conn.end(); } catch {}
-        if (!finished) {
-          finished = true;
-          resolve({ success: false, message: `SSH 连接启动失败: ${err.message}` });
-        }
+        finish({ success: false, message: `SSH 连接 ${address} 启动失败: ${err.message}` });
       }
     });
   }
 
+  private static uploadFile(sftp: SFTPWrapper, conn: Client, remotePath: string, content: Buffer): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const stream = sftp.createWriteStream(remotePath);
+      const onClosed = () => reject(new Error('SSH 连接在文件上传结束前关闭。'));
+      conn.once('close', onClosed);
+      stream.on('error', (err: Error) => {
+        conn.removeListener('close', onClosed);
+        reject(new Error(`上传 ${path.posix.basename(remotePath)} 失败: ${err.message}`));
+      });
+      stream.once('close', () => {
+        conn.removeListener('close', onClosed);
+        resolve();
+      });
+      stream.end(content);
+    });
+  }
+
+  private static runTestCase(
+    conn: Client, remoteBase: string, remoteBin: string, tc: TestCase, timeoutMs: number,
+    normalizeNewlines: boolean, stripTrailingNewlines: boolean
+  ): Promise<SingleRunResult> {
+    return new Promise((resolve) => {
+      const started = Date.now();
+      // Every variable value is one quoted shell argument. Source filenames are prefixed with ./ below.
+      const command = `cd ${quotePosixArgument(remoteBase)} && { _t0=$(date +%s%N 2>/dev/null || date +%s); ${quotePosixArgument(remoteBin)}; _rc=$?; _t1=$(date +%s%N 2>/dev/null || date +%s); echo "__SJOOP_TIME__:$_t0:$_t1:$_rc" >&2; exit $_rc; }`;
+      const failure = (message: string): SingleRunResult => ({
+        testCaseId: tc.id, compiler: 'linux', status: 'RE', timeMs: Date.now() - started,
+        exitCode: -1, stdout: '', stderr: message,
+      });
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const onClosed = () => finish(failure('SSH 连接在测试结束前关闭。'));
+      const finish = (result: SingleRunResult) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        conn.removeListener('close', onClosed);
+        resolve(result);
+      };
+      conn.once('close', onClosed);
+      conn.exec(command, (err, stream) => {
+        if (err) return finish(failure(`执行错误: ${err.message}`));
+        const stdout: Buffer[] = [];
+        const stderr: Buffer[] = [];
+        let killed = false;
+        timer = setTimeout(() => {
+          killed = true;
+          stream.destroy();
+          finish({ ...failure('程序运行超时 (Time Limit Exceeded)'), status: 'TLE', stdout: iconv.decode(Buffer.concat(stdout), 'gb18030') });
+        }, timeoutMs);
+        stream.on('data', (data: Buffer) => stdout.push(data));
+        stream.stderr.on('data', (data: Buffer) => stderr.push(data));
+        stream.on('error', (error: Error) => finish(failure(`执行错误: ${error.message}`)));
+        stream.once('close', (code: number | undefined) => {
+          if (killed) return;
+          const actual = Buffer.concat(stdout);
+          const output = iconv.decode(actual, 'gb18030');
+          const parsed = this.parseExecutionTiming(iconv.decode(Buffer.concat(stderr), 'gb18030'), Date.now() - started, code ?? -1);
+          if (parsed.exitCode !== 0) {
+            return finish({ ...failure(parsed.stderr || `程序异常退出，退出码: ${parsed.exitCode}`), timeMs: parsed.timeMs, exitCode: parsed.exitCode, stdout: output });
+          }
+          const diff = compareBytesStrict(actual, iconv.encode(tc.expectedOutput, 'gb18030'), 'gb18030', normalizeNewlines, stripTrailingNewlines);
+          finish({ testCaseId: tc.id, compiler: 'linux', status: diff.matched ? 'AC' : 'WA', timeMs: parsed.timeMs, exitCode: 0, stdout: output, stderr: parsed.stderr, byteDiff: diff });
+        });
+        stream.end(iconv.encode(tc.input, 'gb18030'));
+      });
+    });
+  }
+
   public static async compileAndRun(
-    config: SshConfig,
-    sources: string[],
-    outputBaseName: string,
-    testCases: TestCase[],
-    timeoutMs: number = 5000,
-    strictDiff: boolean = true,
-    normalizeNewlines: boolean = true,
-    stripTrailingNewlines: boolean = true
+    config: SshConfig, sources: string[], outputBaseName: string, testCases: TestCase[],
+    timeoutMs: number = 5000, strictDiff: boolean = true,
+    normalizeNewlines: boolean = true, stripTrailingNewlines: boolean = true
   ): Promise<{ compileResult: CompileResult; runResults: SingleRunResult[] }> {
     const startTime = Date.now();
-    const connConfig = this.getConnectConfig(config);
-
+    const failure = (error: any) => ({
+      compileResult: { compiler: 'linux' as const, success: false, timeMs: Date.now() - startTime, errorMessage: error.message || String(error) },
+      runResults: [] as SingleRunResult[],
+    });
+    let connConfig: ConnectConfig;
+    let uploads: ReturnType<typeof validateUploadSources>;
+    try {
+      // Snapshot only validated source/header files before accessing the private key or starting SSH.
+      uploads = validateUploadSources(sources, config.workspaceRoot);
+      validateOutputBaseName(outputBaseName);
+      for (const flag of config.flags || []) quotePosixArgument(flag);
+      quotePosixArgument(config.remoteDir);
+      this.validateConnectionConfig(config);
+      const keyPath = fs.realpathSync(config.privateKeyPath!);
+      const samePath = (value: string) => process.platform === 'win32' ? value.toLowerCase() : value;
+      if (uploads.some((upload) => samePath(upload.path) === samePath(keyPath))) {
+        throw new Error('不能将 SSH 私钥作为源码上传。');
+      }
+      connConfig = this.getConnectConfig(config);
+    } catch (err) {
+      return failure(err);
+    }
     return new Promise((resolve) => {
       const conn = new Client();
-      let hasError = false;
-
-      conn.on('error', (err: any) => {
-        if (!hasError) {
-          hasError = true;
-          conn.end();
-          const msg = err.message || '';
-          const errMsg = msg.includes('ETIMEDOUT')
-            ? `无法连接到 ${connConfig.host}！请检查校园网/VPN 连接。`
-            : `SSH 出错: ${msg}`;
-          resolve({
-            compileResult: {
-              compiler: 'linux',
-              success: false,
-              timeMs: Date.now() - startTime,
-              errorMessage: errMsg,
-            },
-            runResults: [],
-          });
-        }
-      });
-
-      conn.on('ready', () => {
-        conn.sftp(async (sftpErr, sftp) => {
-          if (sftpErr) {
-            conn.end();
-            return resolve({
-              compileResult: {
-                compiler: 'linux',
-                success: false,
-                timeMs: Date.now() - startTime,
-                errorMessage: `开启 SFTP 失败: ${sftpErr.message}`,
-              },
-              runResults: [],
-            });
-          }
-
-          // 0. Resolve real absolute home directory on remote Linux
-          let remoteHome = '';
-          await new Promise<void>((homeRes) => {
-            conn.exec('echo $HOME', (hErr, hStream) => {
-              if (hErr || !hStream) {
-                remoteHome = `/home/${connConfig.username}`;
-                return homeRes();
-              }
-              let out = '';
-              hStream.on('data', (d: Buffer) => (out += d.toString()));
-              hStream.on('close', () => {
-                remoteHome = out.trim() || `/home/${connConfig.username}`;
-                homeRes();
-              });
+      let finished = false;
+      const finish = (result: { compileResult: CompileResult; runResults: SingleRunResult[] }) => {
+        if (finished) return;
+        finished = true;
+        conn.end();
+        resolve(result);
+      };
+      conn.on('error', (err: Error) => finish(failure(new Error(`SSH 连接 ${connConfig.host}:${connConfig.port} 出错: ${err.message}`))));
+      conn.once('close', () => finish(failure(new Error('SSH 连接在任务结束前关闭。'))));
+      conn.once('ready', () => {
+        (async () => {
+          const sftp = await new Promise<SFTPWrapper>((res, rej) => {
+            const onClosed = () => rej(new Error('SSH 连接在开启 SFTP 前关闭。'));
+            conn.once('close', onClosed);
+            conn.sftp((err, session) => {
+              conn.removeListener('close', onClosed);
+              if (err) rej(new Error(`开启 SFTP 失败: ${err.message}`));
+              else res(session);
             });
           });
-
-          // Expand ~ in remoteDir to real absolute path
+          const homeResult = await this.execCommand(conn, 'printf "%s" "$HOME"');
+          const remoteHome = homeResult.stdout.toString().trim();
+          if (homeResult.exitCode !== 0 || !remoteHome.startsWith('/')) throw new Error('无法确定远程主目录。');
           let rawDir = (config.remoteDir || '~/sjoop_tmp').trim();
-          if (rawDir.startsWith('~/')) {
-            rawDir = `${remoteHome}/${rawDir.substring(2)}`;
-          } else if (rawDir === '~') {
-            rawDir = remoteHome;
-          } else if (!rawDir.startsWith('/')) {
-            rawDir = `${remoteHome}/${rawDir}`;
+          if (rawDir === '~') rawDir = remoteHome;
+          else if (rawDir.startsWith('~/')) rawDir = path.posix.join(remoteHome, rawDir.slice(2));
+          else if (!rawDir.startsWith('/')) rawDir = path.posix.join(remoteHome, rawDir);
+          const remoteBase = path.posix.join(rawDir, outputBaseName);
+          const mkdir = await this.execCommand(conn, `mkdir -p -- ${quotePosixArgument(remoteBase)}`);
+          if (mkdir.exitCode !== 0) throw new Error(`创建远程目录失败: ${iconv.decode(mkdir.stderr, 'gb18030').trim() || mkdir.exitCode}`);
+          for (const upload of uploads) {
+            await this.uploadFile(sftp, conn, path.posix.join(remoteBase, upload.fileName), upload.content);
           }
-          const remoteBase = `${rawDir}/${outputBaseName}`;
-
-          // 1. Create remote directory with absolute path
-          await new Promise<void>((res) => {
-            conn.exec(`mkdir -p "${remoteBase}"`, () => res());
-          });
-
-          // 2. Upload source files and headers
-          const remoteFileNames: string[] = [];
-          for (const localPath of sources) {
-            const fileName = path.basename(localPath);
-            const remotePath = `${remoteBase}/${fileName}`;
-            const fileBuf = fs.readFileSync(localPath);
-
-            await new Promise<void>((uploadRes, uploadRej) => {
-              const ws = sftp.createWriteStream(remotePath);
-              ws.on('close', () => uploadRes());
-              ws.on('error', (e: any) => uploadRej(e));
-              ws.end(fileBuf);
-            }).catch(() => {
-              // fallback upload command if sftp stream fails
-            });
-
-            remoteFileNames.push(fileName);
-          }
-
-          // 3. Remote Compile (filter .cpp files for compiler invocation)
-          const cppFileNames = remoteFileNames.filter((f) => /\.(cpp|c|cc|cxx)$/i.test(f));
-          const filesToCompile = cppFileNames.length > 0 ? cppFileNames : remoteFileNames;
-
-          const defaultFlags = [
-            '-Wall',
-            '-std=c++20',
-            '-finput-charset=GB18030',
-            '-fexec-charset=GB18030',
-          ];
+          const cppFiles = uploads.filter((upload) => /\.(cpp|c|cc|cxx)$/i.test(upload.fileName));
+          const defaultFlags = ['-Wall', '-std=c++20', '-finput-charset=GB18030', '-fexec-charset=GB18030'];
           const flags = config.flags && config.flags.length > 0 ? config.flags : defaultFlags;
-          const remoteBin = `${remoteBase}/${outputBaseName}_linux`;
-          const compileCmd = `cd "${remoteBase}" && c++ ${flags.join(' ')} -o "${remoteBin}" ${filesToCompile.join(' ')}`;
-
-          conn.exec(compileCmd, (cErr, cStream) => {
-            if (cErr) {
-              conn.end();
-              return resolve({
-                compileResult: {
-                  compiler: 'linux',
-                  success: false,
-                  timeMs: Date.now() - startTime,
-                  errorMessage: `执行远程编译命令失败: ${cErr.message}`,
-                },
-                runResults: [],
-              });
-            }
-
-            let compileStdout: Buffer[] = [];
-            let compileStderr: Buffer[] = [];
-
-            cStream.on('data', (d: Buffer) => compileStdout.push(d));
-            cStream.stderr.on('data', (d: Buffer) => compileStderr.push(d));
-
-            cStream.on('close', async (code: number) => {
-              const compileTimeMs = Date.now() - startTime;
-              const outMsg = (
-                iconv.decode(Buffer.concat(compileStdout), 'gb18030') +
-                '\n' +
-                iconv.decode(Buffer.concat(compileStderr), 'gb18030')
-              ).trim();
-
-              if (code !== 0) {
-                conn.end();
-                return resolve({
-                  compileResult: {
-                    compiler: 'linux',
-                    success: false,
-                    timeMs: compileTimeMs,
-                    errorMessage: outMsg || `Linux c++ 退出码: ${code}`,
-                  },
-                  runResults: [],
-                });
-              }
-
-              // 4. Run test cases on remote server
-              const runResults: SingleRunResult[] = [];
-              for (const tc of testCases) {
-                if (!tc.enabled) continue;
-
-                const caseResult = await new Promise<SingleRunResult>((tcRes) => {
-                  const tcStart = Date.now();
-                  const runCmd = `cd "${remoteBase}"; _t0=$(date +%s%N 2>/dev/null || date +%s); "${remoteBin}"; _rc=$?; _t1=$(date +%s%N 2>/dev/null || date +%s); echo "__SJOOP_TIME__:$_t0:$_t1:$_rc" >&2; exit $_rc`;
-
-                  conn.exec(runCmd, (rErr, rStream) => {
-                    if (rErr) {
-                      return tcRes({
-                        testCaseId: tc.id,
-                        compiler: 'linux',
-                        status: 'RE',
-                        timeMs: Date.now() - tcStart,
-                        exitCode: -1,
-                        stdout: '',
-                        stderr: `执行错误: ${rErr.message}`,
-                      });
-                    }
-
-                    let rStdoutChunks: Buffer[] = [];
-                    let rStderrChunks: Buffer[] = [];
-                    let isKilled = false;
-
-                    const timer = setTimeout(() => {
-                      isKilled = true;
-                      rStream.destroy();
-                    }, timeoutMs);
-
-                    const inBytes = iconv.encode(tc.input, 'gb18030');
-                    const expBytes = iconv.encode(tc.expectedOutput, 'gb18030');
-
-                    rStream.write(inBytes);
-                    rStream.end();
-
-                    rStream.on('data', (d: Buffer) => rStdoutChunks.push(d));
-                    rStream.stderr.on('data', (d: Buffer) => rStderrChunks.push(d));
-
-                    rStream.on('close', (rCode: number) => {
-                      clearTimeout(timer);
-                      const fallbackTime = Date.now() - tcStart;
-                      const actBytes = Buffer.concat(rStdoutChunks);
-                      const stdStr = iconv.decode(actBytes, 'gb18030');
-                      const rawErrStr = iconv.decode(Buffer.concat(rStderrChunks), 'gb18030');
-
-                      const parsed = LinuxSshDriver.parseExecutionTiming(rawErrStr, fallbackTime, rCode);
-                      const tcTime = parsed.timeMs;
-                      const cleanErrStr = parsed.stderr;
-                      const effectiveCode = parsed.exitCode;
-
-                      if (isKilled) {
-                        return tcRes({
-                          testCaseId: tc.id,
-                          compiler: 'linux',
-                          status: 'TLE',
-                          timeMs: fallbackTime,
-                          exitCode: -1,
-                          stdout: stdStr,
-                          stderr: '程序运行超时 (Time Limit Exceeded)',
-                        });
-                      }
-
-                      if (effectiveCode !== 0) {
-                        return tcRes({
-                          testCaseId: tc.id,
-                          compiler: 'linux',
-                          status: 'RE',
-                          timeMs: tcTime,
-                          exitCode: effectiveCode,
-                          stdout: stdStr,
-                          stderr: cleanErrStr || `程序异常退出，退出码: ${effectiveCode}`,
-                        });
-                      }
-
-                      const diff = compareBytesStrict(actBytes, expBytes, 'gb18030', normalizeNewlines, stripTrailingNewlines);
-                      tcRes({
-                        testCaseId: tc.id,
-                        compiler: 'linux',
-                        status: diff.matched ? 'AC' : 'WA',
-                        timeMs: tcTime,
-                        exitCode: 0,
-                        stdout: stdStr,
-                        stderr: cleanErrStr,
-                        byteDiff: diff,
-                      });
-                    });
-                  });
-                });
-
-                runResults.push(caseResult);
-              }
-
-              conn.end();
-              resolve({
-                compileResult: {
-                  compiler: 'linux',
-                  success: true,
-                  timeMs: compileTimeMs,
-                  outputBinaryPath: remoteBin,
-                },
-                runResults,
-              });
-            });
-          });
-        });
+          const remoteBin = path.posix.join(remoteBase, `${outputBaseName}_linux`);
+          const argumentsQuoted = [...flags, '-o', remoteBin, ...cppFiles.map((upload) => `./${upload.fileName}`)].map(quotePosixArgument).join(' ');
+          const compiled = await this.execCommand(conn, `cd ${quotePosixArgument(remoteBase)} && c++ ${argumentsQuoted}`);
+          const compileTimeMs = Date.now() - startTime;
+          if (compiled.exitCode !== 0) {
+            const output = `${iconv.decode(compiled.stdout, 'gb18030')}\n${iconv.decode(compiled.stderr, 'gb18030')}`.trim();
+            return finish(failure(new Error(output || `Linux c++ 退出码: ${compiled.exitCode}`)));
+          }
+          const runResults: SingleRunResult[] = [];
+          for (const tc of testCases) {
+            if (!tc.enabled || finished) continue;
+            runResults.push(await this.runTestCase(conn, remoteBase, remoteBin, tc, timeoutMs, normalizeNewlines, stripTrailingNewlines));
+          }
+          finish({ compileResult: { compiler: 'linux', success: true, timeMs: compileTimeMs, outputBinaryPath: remoteBin }, runResults });
+        })().catch((err: Error) => finish(failure(err)));
       });
-
-      conn.connect(connConfig);
+      try {
+        conn.connect(connConfig);
+      } catch (err) {
+        finish(failure(err));
+      }
     });
   }
 

@@ -6,7 +6,7 @@ import { initLogger, log, showLog } from './logger';
 
 let statusBarItem: vscode.StatusBarItem;
 
-export function activate(context: vscode.Context) {
+export function activate(context: vscode.ExtensionContext) {
   initLogger(context);
   log('SJOOP Assistant 扩展已成功激活。');
 

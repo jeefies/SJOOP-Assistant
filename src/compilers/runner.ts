@@ -18,7 +18,7 @@ export interface BatchRunOptions {
   customVcvars?: string;
   mingwFlags?: string[];
   customGpp?: string;
-  sshConfig: SshConfig;
+  sshConfig?: SshConfig;
   onProgress?: (msg: string) => void;
 }
 
@@ -98,9 +98,10 @@ export class CompilerRunner {
 
     // 3. Linux SSH Run
     if (selectedCompilers.includes('linux')) {
-      onProgress?.('正在连接 Linux 服务器 (10.80.42.230) 编译并执行...');
+      if (!sshConfig) throw new Error('缺少 Linux SSH 连接配置。');
+      onProgress?.(`正在连接 Linux 服务器 (${sshConfig.host}:${sshConfig.port}) 编译并执行...`);
       const { compileResult, runResults } = await LinuxSshDriver.compileAndRun(
-        sshConfig,
+        { ...sshConfig, workspaceRoot },
         sources,
         outputBaseName,
         testCases,

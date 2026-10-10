@@ -22,6 +22,12 @@
     "onLanguage:cpp"
   ],
   "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "编译运行会执行工程代码，SSH 功能会读取用户指定的私钥并上传源文件。"
+    }
+  },
   "contributes": {
     "viewsContainers": {
       "secondarySideBar": [
@@ -147,18 +153,27 @@
         },
         "sjoop.linux.host": {
           "type": "string",
+          "scope": "machine",
           "default": "10.80.42.230",
           "description": "Linux SSH 服务器主机名或内网 IP"
         },
         "sjoop.linux.port": {
           "type": "number",
+          "scope": "machine",
           "default": 22,
           "description": "Linux SSH 端口"
         },
         "sjoop.linux.privateKeyPath": {
           "type": "string",
+          "scope": "machine",
           "default": "",
-          "description": "SSH 私钥文件路径（为空时自动在 ~/.ssh 中搜索 id_ed25519）"
+          "description": "在用户设置中明确指定 SSH 私钥文件路径；为空或无效时停止，不会自动使用其他密钥。加密私钥在连接时提示输入口令。"
+        },
+        "sjoop.linux.hostKeyFingerprint": {
+          "type": "string",
+          "scope": "machine",
+          "default": "",
+          "description": "SSH 服务器主机公钥的 SHA256 指纹（SHA256:...）。须通过管理员等可信渠道核对；未配置或不匹配时拒绝连接。"
         },
         "sjoop.linux.remoteDir": {
           "type": "string",
