@@ -3,3 +3,6 @@ dist
 .vscode-test
 *.vsix
 .sjoop
+*.obj
+*.exe
+/*.cpp

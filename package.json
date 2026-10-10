@@ -4,6 +4,11 @@
   "description": "专为同济大学程序设计/OOP课程定制的VSCode辅助插件，支持MSVC/MinGW/Linux三编译器联动与GB18030编码守护。",
   "version": "0.1.7",
   "publisher": "jeefy",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jeefies/SJOOP-Assistant.git"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
