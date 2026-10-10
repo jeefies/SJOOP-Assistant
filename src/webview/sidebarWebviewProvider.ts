@@ -6,9 +6,10 @@ import { checkFileEncoding, convertFileToGB18030, getSystemEncoding } from '../e
 import { CaseManager } from '../storage/caseManager';
 import { MsvcDriver } from '../compilers/msvcDriver';
 import { MingwDriver } from '../compilers/mingwDriver';
-import { LinuxSshDriver, SshConfig } from '../compilers/linuxSshDriver';
+import { LinuxSshDriver } from '../compilers/linuxSshDriver';
 import { CompilerRunner, BatchRunResult } from '../compilers/runner';
 import { log, showLog, logError } from '../logger';
+import { createSshConfig, getUserSshSetting } from '../security/sshConfiguration';
 
 export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'sjoop.sidebarView';
@@ -160,7 +161,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     const config = vscode.workspace.getConfiguration('sjoop');
     const encodingTarget = config.get<string>('encoding.targetCharset', 'gb18030');
     let encResult = null;
-    const fileToCheck = filePath || this.currentProjectConfig.mainFile;
+    const fileToCheck = filePath || this.currentFilePath;
     if (fileToCheck && fs.existsSync(fileToCheck)) {
       encResult = checkFileEncoding(fileToCheck, encodingTarget);
     }
@@ -175,6 +176,10 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  private getWorkspaceRoot(filePath: string): string {
+    return vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath || path.dirname(filePath);
+  }
+
   private getProjectRootAndBase(): { wsFolder: string; baseName: string } | null {
     if (this.currentProjectConfig.mode === 'multi') {
       const files = this.currentProjectConfig.additionalFiles || [];
@@ -183,13 +188,15 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         return wsFolder ? { wsFolder, baseName: 'multi_project' } : null;
       }
-      const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || path.dirname(first);
+      const anchor = this.currentFilePath || this.activeEditorPath;
+      if (!anchor) return null;
+      const wsFolder = this.getWorkspaceRoot(anchor);
       const baseName = path.basename(first, path.extname(first));
       return { wsFolder, baseName };
     }
 
     if (!this.currentFilePath) return null;
-    const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || path.dirname(this.currentFilePath);
+    const wsFolder = this.getWorkspaceRoot(this.currentFilePath);
     const baseName = path.basename(this.currentFilePath, path.extname(this.currentFilePath));
     return { wsFolder, baseName };
   }
@@ -200,7 +207,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || path.dirname(this.currentFilePath);
+    const wsFolder = this.getWorkspaceRoot(this.currentFilePath);
     const baseName = path.basename(this.currentFilePath, path.extname(this.currentFilePath));
 
     this.currentTestCases = CaseManager.loadTestCases(wsFolder, baseName);
@@ -233,7 +240,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     let encResult = null;
 
     // 优先检查当前正在编辑的代码文件编码，没有则检查主文件
-    const fileToCheck = this.activeEditorPath || this.currentFilePath || this.currentProjectConfig.mainFile;
+    const fileToCheck = this.activeEditorPath || this.currentFilePath;
     if (fileToCheck && fs.existsSync(fileToCheck)) {
       encResult = checkFileEncoding(fileToCheck, encodingTarget);
     }
@@ -241,7 +248,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     const msvcPath = config.get<string>('msvc.vcvarsPath') || MsvcDriver.findVcvars();
     const mingwPath = config.get<string>('mingw.gppPath') || MingwDriver.findGpp();
     const studentId = config.get<string>('studentId', '');
-    const sshKeyPath = config.get<string>('linux.privateKeyPath') || LinuxSshDriver.findDefaultPrivateKey();
+    const sshKeyPath = getUserSshSetting(config, 'linux.privateKeyPath', '');
     const normalizeNewlines = config.get<boolean>('judge.normalizeNewlines', true);
 
     const displayFile = fileToCheck;
@@ -259,7 +266,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       compilerPaths: {
         msvc: msvcPath,
         mingw: mingwPath,
-        linuxHost: config.get<string>('linux.host', '10.80.42.230'),
+        linuxHost: getUserSshSetting(config, 'linux.host', '10.80.42.230'),
         studentId,
         sshKeyPath,
       },
@@ -270,7 +277,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   private async handleConvertEncoding() {
-    const fileToConvert = this.activeEditorPath || this.currentFilePath || this.currentProjectConfig.mainFile;
+    const fileToConvert = this.activeEditorPath || this.currentFilePath;
     if (!fileToConvert || !fs.existsSync(fileToConvert)) return;
     const res = convertFileToGB18030(fileToConvert);
     if (res.success) {
@@ -318,6 +325,9 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
 
   public async handleTestSSH(uiStudentId?: string) {
     try {
+      if (!vscode.workspace.isTrusted) {
+        throw new Error('请先信任当前工作区，再使用 SSH 连接。');
+      }
       const config = vscode.workspace.getConfiguration('sjoop');
       let studentId = (uiStudentId !== undefined && uiStudentId.trim() !== '')
         ? uiStudentId.trim()
@@ -342,43 +352,13 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         console.warn('保存学号至 VS Code 设置失败:', e);
       }
 
-      // 2. 检查 SSH 私钥
-      const customKey = (config.get<string>('linux.privateKeyPath') || '').trim();
-      const keyPath = (customKey && fs.existsSync(customKey)) ? customKey : LinuxSshDriver.findDefaultPrivateKey();
-      if (!keyPath || !fs.existsSync(keyPath)) {
-        const msg = '未找到私钥路径，请检查 %HOME%/.ssh 或者在设置中手动定位';
-        vscode.window.showErrorMessage(msg);
-        this._view?.webview.postMessage({
-          type: 'sshTestResult',
-          success: false,
-          message: msg,
-        });
-        return;
-      }
-
-      // 3. 检查服务器地址
-      const host = (config.get<string>('linux.host') || '10.80.42.230').trim();
-      const port = config.get<number>('linux.port', 22);
-      if (!host) {
-        const msg = '未配置 Linux 服务器地址 (默认: 10.80.42.230)';
-        vscode.window.showErrorMessage(msg);
-        this._view?.webview.postMessage({ type: 'sshTestResult', success: false, message: msg });
-        return;
-      }
+      const sshConf = await createSshConfig(config, studentId);
+      const { host, port } = sshConf;
 
       this._view?.webview.postMessage({
         type: 'sshTestStart',
         message: `正在连接 ${host}:${port} (用户: u${studentId})...`,
       });
-
-      const sshConf: SshConfig = {
-        host,
-        port,
-        studentId,
-        privateKeyPath: keyPath,
-        remoteDir: config.get<string>('linux.remoteDir', '~/sjoop_tmp'),
-        flags: config.get<string[]>('linux.flags', []),
-      };
 
       const res = await vscode.window.withProgress(
         {
@@ -414,6 +394,12 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   public async handleRunBatch() {
+    if (!vscode.workspace.isTrusted) {
+      const message = '请先信任当前工作区，再编译和运行程序。';
+      vscode.window.showErrorMessage(message);
+      this._view?.webview.postMessage({ type: 'runError', message });
+      return;
+    }
     // Auto save all active files before compiling
     await vscode.workspace.saveAll(false);
 
@@ -423,7 +409,13 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     let wsFolder = '';
 
     if (this.currentProjectConfig.mode === 'multi') {
-      const allFiles = (this.currentProjectConfig.additionalFiles || []).filter(fs.existsSync);
+      const allFiles = this.currentProjectConfig.additionalFiles || [];
+      if (!Array.isArray(allFiles) || allFiles.some((file) => typeof file !== 'string')) {
+        const message = '联合编译文件清单无效，请重新选择源文件。';
+        vscode.window.showErrorMessage(message);
+        this._view?.webview.postMessage({ type: 'runError', message });
+        return;
+      }
       if (allFiles.length === 0) {
         const msg = '多文件模式下请先点击 "+ 添加 .cpp / .h 文件" 添加需要联合编译的文件！';
         vscode.window.showWarningMessage(msg);
@@ -439,7 +431,14 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         return;
       }
 
-      wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || path.dirname(allFiles[0]);
+      const anchor = this.currentFilePath || this.activeEditorPath;
+      if (!anchor) {
+        const message = '请先在编辑器中打开此工程的 C/C++ 源文件。';
+        vscode.window.showWarningMessage(message);
+        this._view?.webview.postMessage({ type: 'runError', message });
+        return;
+      }
+      wsFolder = this.getWorkspaceRoot(anchor);
       baseName = path.basename(cppFiles[0], path.extname(cppFiles[0]));
       sources = allFiles;
     } else {
@@ -450,7 +449,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         this._view?.webview.postMessage({ type: 'runError', message: msg });
         return;
       }
-      wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || path.dirname(activeFile);
+      wsFolder = this.getWorkspaceRoot(activeFile);
       baseName = path.basename(activeFile, path.extname(activeFile));
       sources = [activeFile];
     }
@@ -468,14 +467,6 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         this._view?.webview.postMessage({ type: 'runError', message: msg });
         return;
       }
-      const customKey = (config.get<string>('linux.privateKeyPath') || '').trim();
-      const keyPath = (customKey && fs.existsSync(customKey)) ? customKey : LinuxSshDriver.findDefaultPrivateKey();
-      if (!keyPath || !fs.existsSync(keyPath)) {
-        const msg = '未找到私钥路径，请检查 %HOME%/.ssh 或者在设置中手动定位';
-        vscode.window.showErrorMessage(msg);
-        this._view?.webview.postMessage({ type: 'runError', message: msg });
-        return;
-      }
       activeCompilers.push('linux');
     }
 
@@ -486,25 +477,15 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const customKey = (config.get<string>('linux.privateKeyPath') || '').trim();
-    const keyPath = (customKey && fs.existsSync(customKey)) ? customKey : LinuxSshDriver.findDefaultPrivateKey();
-
-    const sshConf: SshConfig = {
-      host: config.get<string>('linux.host', '10.80.42.230'),
-      port: config.get<number>('linux.port', 22),
-      studentId: studentId,
-      privateKeyPath: keyPath || undefined,
-      remoteDir: config.get<string>('linux.remoteDir', '~/sjoop_tmp'),
-      flags: config.get<string[]>('linux.flags', []),
-    };
-
     const normalizeNewlines = config.get<boolean>('judge.normalizeNewlines', true);
     const stripTrailingNewlines = config.get<boolean>('judge.stripTrailingNewlines', true);
     const strictDiff = config.get<boolean>('judge.strictByteDiff', true);
 
-    this._view?.webview.postMessage({ type: 'runStart' });
-
     try {
+      const sshConf = activeCompilers.includes('linux')
+        ? await createSshConfig(config, studentId, wsFolder)
+        : undefined;
+      this._view?.webview.postMessage({ type: 'runStart' });
       const batchRes = await CompilerRunner.executeBatch({
         workspaceRoot: wsFolder,
         sources,
