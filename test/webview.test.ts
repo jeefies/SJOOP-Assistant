@@ -62,6 +62,10 @@ describe('Webview UI Comprehensive Automated Test Suite (JSDOM)', () => {
       assert.ok(html.includes('id="btnConvert"'), 'Missing btnConvert element');
       assert.ok(html.includes('id="btnModeSingle"'), 'Missing btnModeSingle element');
       assert.ok(html.includes('id="btnModeMulti"'), 'Missing btnModeMulti element');
+      assert.ok(html.includes('id="selProject"'), 'Missing selProject element');
+      assert.ok(html.includes('id="btnNewProject"'), 'Missing btnNewProject element');
+      assert.ok(html.includes('id="btnRenameProject"'), 'Missing btnRenameProject element');
+      assert.ok(html.includes('id="btnDeleteProject"'), 'Missing btnDeleteProject element');
       assert.ok(html.includes('id="btnAddSource"'), 'Missing btnAddSource element');
       assert.ok(html.includes('id="sourceFileList"'), 'Missing sourceFileList element');
       assert.ok(html.includes('id="singleFileSection"'), 'Missing singleFileSection element');
@@ -243,6 +247,50 @@ describe('Webview UI Comprehensive Automated Test Suite (JSDOM)', () => {
       removeBtn.click();
       assert.strictEqual(env.getLastMessage()?.type, 'removeAdditionalFile');
       assert.strictEqual(env.getLastMessage()?.filePath, 'C:\\project\\sub1.cpp');
+    });
+
+    it('should render project selector dropdown and handle switch, new, rename, and delete actions', async () => {
+      const env = await createTestEnv();
+      await env.dispatchMessage({
+        type: 'stateUpdate',
+        projectConfig: {
+          mode: 'multi',
+          activeProjectId: 'proj_2',
+          projects: [
+            { id: 'proj_1', name: '项目一' },
+            { id: 'proj_2', name: '项目二' },
+          ],
+          additionalFiles: [],
+        },
+      });
+
+      const sel = env.document.getElementById('selProject') as HTMLSelectElement;
+      assert.strictEqual(sel.options.length, 2);
+      assert.strictEqual(sel.options[0].value, 'proj_1');
+      assert.strictEqual(sel.options[0].textContent, '项目一');
+      assert.strictEqual(sel.options[1].value, 'proj_2');
+      assert.strictEqual(sel.value, 'proj_2');
+
+      // 1. Switch project
+      sel.value = 'proj_1';
+      sel.dispatchEvent(new env.window.Event('change'));
+      assert.strictEqual(env.getLastMessage()?.type, 'switchProject');
+      assert.strictEqual(env.getLastMessage()?.projectId, 'proj_1');
+
+      // 2. New project button
+      const btnNew = env.document.getElementById('btnNewProject') as HTMLButtonElement;
+      btnNew.click();
+      assert.strictEqual(env.getLastMessage()?.type, 'createProject');
+
+      // 3. Rename project button
+      const btnRename = env.document.getElementById('btnRenameProject') as HTMLButtonElement;
+      btnRename.click();
+      assert.strictEqual(env.getLastMessage()?.type, 'renameProject');
+
+      // 4. Delete project button
+      const btnDelete = env.document.getElementById('btnDeleteProject') as HTMLButtonElement;
+      btnDelete.click();
+      assert.strictEqual(env.getLastMessage()?.type, 'deleteProject');
     });
 
     it('should seamlessly update header and encoding on activeFileChanged without destroying DOM elements', async () => {

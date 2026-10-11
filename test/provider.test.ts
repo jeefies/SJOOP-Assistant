@@ -131,9 +131,38 @@ describe('SidebarWebviewProvider State & Multi-file Retention Suite', () => {
       },
     });
 
-    // Check on disk that .sjoop/projects/projA.json was saved
+    // Check that config is stored without polluting workspace
     const loaded = CaseManager.loadProjectConfig(tmpDir, 'projA', fileA);
     assert.strictEqual(loaded.mode, 'multi');
-    assert.strictEqual(loaded.additionalFiles.length, 2);
+    assert.strictEqual(loaded.additionalFiles?.length, 2);
+    assert.strictEqual(fs.existsSync(path.join(tmpDir, '.sjoop')), false);
+  });
+
+  it('should handle createProject, switchProject, renameProject, and deleteProject messages', async () => {
+    provider = setupProvider();
+
+    // 1. Create project
+    await messageHandler!({ type: 'createProject' });
+    let lastMsg = postedMessages[postedMessages.length - 1];
+    assert.strictEqual(lastMsg?.type, 'stateUpdate');
+    const createdId = lastMsg?.projectConfig?.activeProjectId;
+    assert.ok(createdId);
+
+    // 2. Rename project
+    await messageHandler!({ type: 'renameProject' });
+    lastMsg = postedMessages[postedMessages.length - 1];
+    assert.strictEqual(lastMsg?.type, 'stateUpdate');
+
+    // 3. Switch project to default
+    await messageHandler!({ type: 'switchProject', projectId: 'default' });
+    lastMsg = postedMessages[postedMessages.length - 1];
+    assert.strictEqual(lastMsg?.type, 'stateUpdate');
+    assert.strictEqual(lastMsg?.projectConfig?.activeProjectId, 'default');
+
+    // 4. Delete the newly created project
+    CaseManager.setActiveProject(createdId!);
+    await messageHandler!({ type: 'deleteProject' });
+    lastMsg = postedMessages[postedMessages.length - 1];
+    assert.strictEqual(lastMsg?.type, 'stateUpdate');
   });
 });

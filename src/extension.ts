@@ -3,11 +3,15 @@ import * as path from 'path';
 import { SidebarWebviewProvider } from './webview/sidebarWebviewProvider';
 import { checkFileEncoding, convertFileToGB18030 } from './encoding/encodingGuard';
 import { initLogger, log, showLog } from './logger';
+import { CaseManager } from './storage/caseManager';
 
 let statusBarItem: vscode.StatusBarItem;
 
-export function activate(context: vscode.Context) {
+export function activate(context: vscode.ExtensionContext) {
   initLogger(context);
+  if (context.globalStorageUri?.fsPath) {
+    CaseManager.init(context.globalStorageUri.fsPath);
+  }
   log('SJOOP Assistant 扩展已成功激活。');
 
   const provider = new SidebarWebviewProvider(context.extensionUri);

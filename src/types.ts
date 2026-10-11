@@ -41,10 +41,25 @@ export interface CompileResult {
   outputBinaryPath?: string;
 }
 
+export interface MultiProject {
+  id: string;
+  name: string;
+  createdAt: number;
+  files: string[];
+  testCases: TestCase[];
+}
+
+export interface ProjectsStore {
+  activeProjectId: string;
+  projects: MultiProject[];
+}
+
 export interface ProjectConfig {
   mode: 'single' | 'multi';
-  mainFile: string;
-  additionalFiles: string[]; // relative or absolute paths to other .cpp / .h
+  activeProjectId?: string;
+  projects?: { id: string; name: string }[];
+  mainFile?: string;
+  additionalFiles?: string[]; // relative or absolute paths to other .cpp / .h
 }
 
 export interface EncodingCheckResult {

@@ -162,7 +162,57 @@ describe('SJOOP Core Modules Test Suite', () => {
 
       const loaded = CaseManager.loadProjectConfig(tmpDir, '4-b16', '4-b16-main.cpp');
       assert.strictEqual(loaded.mode, 'multi');
-      assert.strictEqual(loaded.additionalFiles.length, 2);
+      assert.strictEqual(loaded.additionalFiles?.length, 2);
+    });
+
+    it('should strictly ensure zero .sjoop folders or files are created in workspace directory', () => {
+      const workspaceSjoop = path.join(tmpDir, '.sjoop');
+      assert.strictEqual(fs.existsSync(workspaceSjoop), false, 'Workspace must never contain .sjoop folder!');
+    });
+
+    it('should manage multi-project lifecycle (create, switch, rename, delete)', () => {
+      const p1 = CaseManager.createProject('期末大作业', ['main.cpp', 'helper.cpp']);
+      assert.strictEqual(p1.name, '期末大作业');
+      assert.strictEqual(p1.files.length, 2);
+
+      const active = CaseManager.getActiveProject();
+      assert.strictEqual(active.id, p1.id);
+
+      // Rename
+      const renamed = CaseManager.renameProject(p1.id, 'OOP大作业最终版');
+      assert.strictEqual(renamed, true);
+      assert.strictEqual(CaseManager.getActiveProject().name, 'OOP大作业最终版');
+
+      // Create second project
+      const p2 = CaseManager.createProject('作业六');
+      assert.strictEqual(CaseManager.getActiveProject().id, p2.id);
+
+      // Switch back to p1
+      CaseManager.setActiveProject(p1.id);
+      assert.strictEqual(CaseManager.getActiveProject().id, p1.id);
+
+      // Delete p1
+      const deleted = CaseManager.deleteProject(p1.id);
+      assert.strictEqual(deleted, true);
+      assert.strictEqual(CaseManager.getProject(p1.id), undefined);
+      assert.notStrictEqual(CaseManager.getActiveProject().id, p1.id);
+    });
+
+    it('should store and load single-file test cases globally without polluting workspace', () => {
+      const singleFile = path.join(tmpDir, 'homework_single.cpp');
+      fs.writeFileSync(singleFile, 'int main() {}');
+
+      const cases = [
+        { id: 'c1', name: '测试点 1', input: '123\n', expectedOutput: '456\n', enabled: true },
+      ];
+      CaseManager.saveSingleFileTestCases(singleFile, cases);
+
+      const loaded = CaseManager.loadSingleFileTestCases(singleFile);
+      assert.strictEqual(loaded.length, 1);
+      assert.strictEqual(loaded[0].input, '123\n');
+
+      // Double check workspace has no .sjoop
+      assert.strictEqual(fs.existsSync(path.join(tmpDir, '.sjoop')), false);
     });
   });
 

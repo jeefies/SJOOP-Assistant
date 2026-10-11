@@ -7,11 +7,14 @@ Module.prototype.require = function (request: string) {
       window: {
         createOutputChannel: () => ({ appendLine: () => {}, show: () => {} }),
         showInformationMessage: () => Promise.resolve(),
-        showWarningMessage: () => Promise.resolve(),
+        showWarningMessage: () => Promise.resolve('确认删除'),
         showErrorMessage: () => Promise.resolve(),
+        showInputBox: () => Promise.resolve('新项目'),
+        showOpenDialog: () => Promise.resolve([]),
         registerWebviewViewProvider: () => ({ dispose: () => {} }),
       },
       workspace: {
+        saveAll: () => Promise.resolve(true),
         getConfiguration: () => ({
           get: (key: string, defVal: any) => defVal,
           update: () => Promise.resolve(),

@@ -3,6 +3,7 @@ import { CompilerType, CompileResult, SingleRunResult, TestCase } from '../types
 import { MsvcDriver } from './msvcDriver';
 import { MingwDriver } from './mingwDriver';
 import { LinuxSshDriver, SshConfig } from './linuxSshDriver';
+import { CaseManager } from '../storage/caseManager';
 
 export interface BatchRunOptions {
   workspaceRoot: string;
@@ -60,7 +61,7 @@ export class CompilerRunner {
       },
     };
 
-    const binDir = path.join(workspaceRoot, '.sjoop', 'bin');
+    const binDir = CaseManager.getBuildDir();
 
     // 1. MSVC Run
     if (selectedCompilers.includes('msvc')) {
