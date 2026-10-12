@@ -755,6 +755,52 @@ describe('Webview UI Comprehensive Automated Test Suite (JSDOM)', () => {
       assert.strictEqual(env.getLastMessage()?.type, 'updateTestCases');
       assert.strictEqual(env.getLastMessage()?.testCases[0].expectedOutput, '运行输出: 456\n');
     });
+
+    it('should automatically expand detail drawer on non-AC status (WA/CE) and keep closed on all AC', async () => {
+      const env = await createTestEnv();
+      await env.dispatchMessage({
+        type: 'stateUpdate',
+        compilers: { msvc: true, mingw: false, linux: false },
+        testCases: [
+          { id: 'c_fail', name: '失败点', input: '1', expectedOutput: '2', enabled: true },
+        ],
+      });
+
+      // 1. When result is WA, detailModal should automatically expand (display: block)
+      await env.dispatchMessage({
+        type: 'runComplete',
+        result: {
+          timestamp: Date.now(),
+          compilations: { msvc: { compiler: 'msvc', success: true } },
+          runs: {
+            msvc: [
+              { compiler: 'msvc', testCaseId: 'c_fail', status: 'WA', timeMs: 30, exitCode: 0, stdout: '3', byteDiff: { matched: false, message: '不匹配', expectedContext: '2', actualContext: '3' } },
+            ],
+          },
+        },
+      });
+
+      const modal = env.document.getElementById('detailModal');
+      const modalTitle = env.document.getElementById('modalTitle');
+      assert.strictEqual(modal?.style.display, 'block', 'Detail drawer must auto-expand on WA');
+      assert.ok(modalTitle?.textContent?.includes('MSVC 详情 (WA)'));
+
+      // 2. When result is all AC, detailModal should be closed (display: none)
+      await env.dispatchMessage({
+        type: 'runComplete',
+        result: {
+          timestamp: Date.now(),
+          compilations: { msvc: { compiler: 'msvc', success: true } },
+          runs: {
+            msvc: [
+              { compiler: 'msvc', testCaseId: 'c_fail', status: 'AC', timeMs: 20, exitCode: 0, stdout: '2' },
+            ],
+          },
+        },
+      });
+
+      assert.strictEqual(modal?.style.display, 'none', 'Detail drawer must stay closed when all AC');
+    });
   });
 
   describe('10. Error Boundary & Robustness', () => {

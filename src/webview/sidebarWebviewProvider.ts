@@ -1298,6 +1298,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         lastRenderedResultsKey = '';
         return;
       }
+      state.lastRunResult = result;
       const currentKey = JSON.stringify({
         res: result,
         cases: (state.testCases || []).map(c => ({ id: c.id, name: c.name, enabled: c.enabled })),
@@ -1350,6 +1351,51 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
 
         body.appendChild(tr);
       });
+
+      // 当判定不为 AC 时（出现 CE, WA, TLE, RE 等非 AC 状态），测试结果矩阵直接展开异常详情
+      let firstNonAc = null;
+      // 1. 优先检查编译器是否有 CE (编译错误)
+      for (const comp of ['msvc', 'mingw', 'linux']) {
+        if (state.compilers && state.compilers[comp]) {
+          const compRes = result.compilations && result.compilations[comp];
+          if (compRes && !compRes.success) {
+            firstNonAc = { type: 'ce', compiler: comp };
+            break;
+          }
+        }
+      }
+
+      // 2. 若编译均成功，检查各启用测试点是否有非 AC (WA, TLE, RE)
+      if (!firstNonAc) {
+        for (const tc of (state.testCases || [])) {
+          if (!tc.enabled) continue;
+          for (const comp of ['msvc', 'mingw', 'linux']) {
+            if (state.compilers && state.compilers[comp]) {
+              const runList = (result.runs && result.runs[comp]) || [];
+              const run = runList.find(r => r.testCaseId === tc.id);
+              if (run && (run.status === 'WA' || run.status === 'TLE' || run.status === 'RE')) {
+                firstNonAc = { type: 'run', compiler: comp, caseId: tc.id };
+                break;
+              }
+            }
+          }
+          if (firstNonAc) break;
+        }
+      }
+
+      if (firstNonAc) {
+        if (firstNonAc.type === 'ce') {
+          showCeDetail(firstNonAc.compiler);
+        } else {
+          showRunDetail(firstNonAc.compiler, firstNonAc.caseId);
+        }
+        try {
+          card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        } catch (_) {}
+      } else {
+        const modal = document.getElementById('detailModal');
+        if (modal) modal.style.display = 'none';
+      }
     }
 
     // Line-by-line Diff Generator
@@ -1426,7 +1472,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     // Detail modal helpers
-    window.showCeDetail = function(compiler) {
+    function showCeDetail(compiler) {
       const modal = document.getElementById('detailModal');
       const title = document.getElementById('modalTitle');
       const content = document.getElementById('modalContent');
@@ -1435,7 +1481,8 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       title.textContent = compiler.toUpperCase() + ' 编译错误 (CE)';
       content.innerHTML = '<div class="diff-block" style="color:#f14c4c;">' + escapeHtml(compRes ? compRes.errorMessage || '未知编译错误' : '无详细报错') + '</div>';
       modal.style.display = 'block';
-    };
+    }
+    window.showCeDetail = showCeDetail;
 
     window.adoptStdout = function(caseId) {
       const tc = state.testCases.find(c => c.id === caseId);
@@ -1464,7 +1511,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       }
     };
 
-    window.showRunDetail = function(compiler, caseId) {
+    function showRunDetail(compiler, caseId) {
       const modal = document.getElementById('detailModal');
       const title = document.getElementById('modalTitle');
       const content = document.getElementById('modalContent');
@@ -1538,7 +1585,8 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         btnCopy.onclick = () => window.copyToClipboard(run.stdout || '');
       }
       modal.style.display = 'block';
-    };
+    }
+    window.showRunDetail = showRunDetail;
 
     document.getElementById('btnCloseModal').onclick = () => {
       document.getElementById('detailModal').style.display = 'none';
