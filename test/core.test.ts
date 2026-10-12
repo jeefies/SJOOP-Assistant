@@ -124,12 +124,14 @@ describe('SJOOP Core Modules Test Suite', () => {
       assert.strictEqual(diff.matched, false);
     });
 
-    it('should report WA on content difference', () => {
+    it('should report WA on content difference and preserve full string context', () => {
       const bufActual = iconv.encode('结果: 42', 'gb18030');
       const bufExpected = iconv.encode('结果: 43', 'gb18030');
       const diff = compareBytesStrict(bufActual, bufExpected, 'gb18030');
       assert.strictEqual(diff.matched, false);
       assert.ok(diff.message.includes('不匹配'));
+      assert.strictEqual(diff.expectedContext, '结果: 43');
+      assert.strictEqual(diff.actualContext, '结果: 42');
     });
   });
 
@@ -277,6 +279,30 @@ describe('SJOOP Core Modules Test Suite', () => {
       });
 
       assert.strictEqual(runRes.status, 'AC', `Expected AC but got ${runRes.status}: diff=${runRes.byteDiff?.message}`);
+    });
+
+    it('should return RUN status without judging AC/WA when expectedOutput is empty', async () => {
+      const cppFile = path.join(tmpDir, 'test_run_only.cpp');
+      const cppContent = iconv.encode(
+        '#include <iostream>\nusing namespace std;\nint main() { cout << "自由运行输出" << endl; return 0; }\n',
+        'gb18030'
+      );
+      fs.writeFileSync(cppFile, cppContent);
+
+      const compileRes = await MingwDriver.compile([cppFile], path.join(tmpDir, 'bin_run'), 'test_run');
+      assert.strictEqual(compileRes.success, true);
+
+      const runRes = await MingwDriver.runTestCase(compileRes.outputBinaryPath!, {
+        id: 'case_no_exp',
+        name: '无期望输出点',
+        input: '',
+        expectedOutput: '', // Empty expected output
+        enabled: true,
+      });
+
+      assert.strictEqual(runRes.status, 'RUN', 'Should have RUN status instead of AC or WA');
+      assert.ok(runRes.stdout.includes('自由运行输出'));
+      assert.strictEqual(runRes.byteDiff, undefined, 'ByteDiff should be undefined');
     });
   });
 

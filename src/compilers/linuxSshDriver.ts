@@ -379,6 +379,19 @@ export class LinuxSshDriver {
                         });
                       }
 
+                      const hasExpected = typeof tc.expectedOutput === 'string' && tc.expectedOutput.trim() !== '';
+                      if (!hasExpected) {
+                        return tcRes({
+                          testCaseId: tc.id,
+                          compiler: 'linux',
+                          status: 'RUN',
+                          timeMs: tcTime,
+                          exitCode: 0,
+                          stdout: stdStr,
+                          stderr: cleanErrStr,
+                        });
+                      }
+
                       const diff = compareBytesStrict(actBytes, expBytes, 'gb18030', normalizeNewlines, stripTrailingNewlines);
                       tcRes({
                         testCaseId: tc.id,

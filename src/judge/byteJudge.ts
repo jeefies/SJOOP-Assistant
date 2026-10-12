@@ -88,15 +88,8 @@ export function compareBytesStrict(
   const expByte = firstDiffOffset < expBuf.length ? expBuf[firstDiffOffset] : undefined;
   const actByte = firstDiffOffset < actBuf.length ? actBuf[firstDiffOffset] : undefined;
 
-  const contextStart = Math.max(0, firstDiffOffset - 15);
-  const contextEndExp = Math.min(expBuf.length, firstDiffOffset + 25);
-  const contextEndAct = Math.min(actBuf.length, firstDiffOffset + 25);
-
-  const expSlice = expBuf.subarray(contextStart, contextEndExp);
-  const actSlice = actBuf.subarray(contextStart, contextEndAct);
-
-  const expDecoded = iconv.decode(expSlice, encoding);
-  const actDecoded = iconv.decode(actSlice, encoding);
+  const expDecoded = iconv.decode(expBuf, encoding);
+  const actDecoded = iconv.decode(actBuf, encoding);
 
   const expHex = expByte !== undefined ? `0x${expByte.toString(16).padStart(2, '0').toUpperCase()} (${formatByteChar(expByte)})` : '<EOF>';
   const actHex = actByte !== undefined ? `0x${actByte.toString(16).padStart(2, '0').toUpperCase()} (${formatByteChar(actByte)})` : '<EOF>';

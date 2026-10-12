@@ -1,6 +1,6 @@
 export type CompilerType = 'msvc' | 'mingw' | 'linux';
 
-export type JudgeStatus = 'AC' | 'WA' | 'TLE' | 'RE' | 'CE';
+export type JudgeStatus = 'AC' | 'WA' | 'TLE' | 'RE' | 'CE' | 'RUN';
 
 export interface TestCase {
   id: string;

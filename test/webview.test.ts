@@ -703,12 +703,57 @@ describe('Webview UI Comprehensive Automated Test Suite (JSDOM)', () => {
       pillWa.click();
       assert.strictEqual(modal?.style.display, 'block');
       assert.ok(modalTitle?.textContent?.includes('MINGW 详情 (WA)'));
+      assert.ok(modalContent?.innerHTML?.includes('diff-container'), 'Modal must render visual line diff');
+      assert.ok(modalContent?.textContent?.includes('完整实际输出 (stdout)'));
       assert.ok(modalContent?.textContent?.includes('在偏移 5 处不匹配'));
       assert.ok(modalContent?.textContent?.includes('Warning: unused variable'));
 
       // Close modal
       btnClose.click();
       assert.strictEqual(modal?.style.display, 'none');
+    });
+
+    it('should render RUN pill for empty expected output and support adoptStdout', async () => {
+      const env = await createTestEnv();
+      await env.dispatchMessage({
+        type: 'stateUpdate',
+        compilers: { msvc: true, mingw: false, linux: false },
+        testCases: [
+          { id: 'c_empty', name: '无答案点', input: '123', expectedOutput: '', enabled: true },
+        ],
+      });
+
+      await env.dispatchMessage({
+        type: 'runComplete',
+        result: {
+          timestamp: Date.now(),
+          compilations: {
+            msvc: { compiler: 'msvc', success: true },
+          },
+          runs: {
+            msvc: [
+              { compiler: 'msvc', testCaseId: 'c_empty', status: 'RUN', timeMs: 25, exitCode: 0, stdout: '运行输出: 456\n', stderr: '' },
+            ],
+          },
+        },
+      });
+
+      const pillRun = env.document.querySelector('.pill-run') as HTMLElement;
+      assert.ok(pillRun, 'Should render .pill-run for RUN status');
+      assert.ok(pillRun.textContent?.includes('RUN (25ms)'));
+
+      // Click RUN pill
+      pillRun.click();
+      const modal = env.document.getElementById('detailModal');
+      const modalContent = env.document.getElementById('modalContent');
+      assert.strictEqual(modal?.style.display, 'block');
+      assert.ok(modalContent?.textContent?.includes('未设置期望输出'));
+      assert.ok(modalContent?.textContent?.includes('运行输出: 456'));
+
+      // Adopt stdout as expected
+      env.window.adoptStdout('c_empty');
+      assert.strictEqual(env.getLastMessage()?.type, 'updateTestCases');
+      assert.strictEqual(env.getLastMessage()?.testCases[0].expectedOutput, '运行输出: 456\n');
     });
   });
 

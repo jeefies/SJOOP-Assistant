@@ -720,16 +720,19 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     }
     textarea {
       width: 100%;
-      height: 48px;
+      min-height: 42px;
+      max-height: 360px;
       background: var(--vscode-input-background, #1e1e1e);
       color: var(--vscode-input-foreground, #cccccc);
       border: 1px solid var(--border);
       border-radius: 3px;
       font-family: var(--vscode-editor-font-family, monospace);
       font-size: 11px;
+      line-height: 1.4;
       box-sizing: border-box;
       resize: vertical;
-      padding: 4px;
+      padding: 5px;
+      overflow-y: auto;
     }
     .table-res {
       width: 100%;
@@ -755,6 +758,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     .pill-tle { background-color: var(--badge-tle); }
     .pill-re { background-color: var(--badge-re); }
     .pill-ce { background-color: var(--badge-ce); }
+    .pill-run { background-color: #007acc; }
     .modal {
       display: none;
       background: var(--card-bg);
@@ -773,6 +777,53 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       font-family: monospace;
       color: #e51400;
     }
+    .diff-container {
+      margin-top: 6px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 11px;
+    }
+    .diff-header {
+      background: rgba(255, 255, 255, 0.06);
+      padding: 5px 8px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .diff-body {
+      background: #111;
+      max-height: 250px;
+      overflow-y: auto;
+      padding: 4px 0;
+    }
+    .diff-row {
+      display: flex;
+      padding: 1px 8px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      line-height: 1.4;
+    }
+    .diff-row-equal { color: #888; }
+    .diff-row-add { background: rgba(56, 138, 52, 0.22); color: #4ec9b0; }
+    .diff-row-remove { background: rgba(229, 20, 0, 0.22); color: #f14c4c; }
+    .diff-ln {
+      width: 28px;
+      min-width: 28px;
+      color: #666;
+      text-align: right;
+      margin-right: 8px;
+      user-select: none;
+    }
+    .diff-sign {
+      width: 14px;
+      min-width: 14px;
+      user-select: none;
+      font-weight: bold;
+    }
+    .diff-txt { flex: 1; min-width: 0; }
   </style>
 </head>
 <body>
@@ -1204,6 +1255,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         inLabel.textContent = '输入 (stdin):';
         const inArea = document.createElement('textarea');
         inArea.value = tc.input || '';
+        inArea.oninput = () => autoResizeTextarea(inArea);
         inArea.onchange = (e) => updateCaseInput(tc.id, e.target.value);
 
         const outLabel = document.createElement('div');
@@ -1212,6 +1264,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         outLabel.textContent = '期望输出 (stdout):';
         const outArea = document.createElement('textarea');
         outArea.value = tc.expectedOutput || '';
+        outArea.oninput = () => autoResizeTextarea(outArea);
         outArea.onchange = (e) => updateCaseOutput(tc.id, e.target.value);
 
         box.appendChild(header);
@@ -1221,7 +1274,20 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         box.appendChild(outArea);
 
         container.appendChild(box);
+        autoResizeTextarea(inArea);
+        autoResizeTextarea(outArea);
       });
+
+      setTimeout(() => {
+        container.querySelectorAll('textarea').forEach(autoResizeTextarea);
+      }, 0);
+    }
+
+    function autoResizeTextarea(el) {
+      if (!el) return;
+      el.style.height = 'auto';
+      const targetHeight = Math.max(42, Math.min(el.scrollHeight + 4, 360));
+      el.style.height = targetHeight + 'px';
     }
 
     let lastRenderedResultsKey = '';
@@ -1286,6 +1352,79 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       });
     }
 
+    // Line-by-line Diff Generator
+    function generateLineDiffHtml(expectedStr, actualStr) {
+      const expNorm = (expectedStr || '').replace(/\\r\\n/g, '\\n').replace(/\\r/g, '\\n');
+      const actNorm = (actualStr || '').replace(/\\r\\n/g, '\\n').replace(/\\r/g, '\\n');
+
+      let expLines = expNorm.split('\\n');
+      let actLines = actNorm.split('\\n');
+
+      if (expLines.length > 1 && expLines[expLines.length - 1] === '') expLines.pop();
+      if (actLines.length > 1 && actLines[actLines.length - 1] === '') actLines.pop();
+
+      const m = expLines.length;
+      const n = actLines.length;
+
+      let diff = [];
+      if (m * n <= 250000) {
+        const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
+        for (let i = 0; i < m; i++) {
+          for (let j = 0; j < n; j++) {
+            if (expLines[i] === actLines[j]) {
+              dp[i + 1][j + 1] = dp[i][j] + 1;
+            } else {
+              dp[i + 1][j + 1] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+            }
+          }
+        }
+
+        let i = m, j = n;
+        while (i > 0 || j > 0) {
+          if (i > 0 && j > 0 && expLines[i - 1] === actLines[j - 1]) {
+            diff.unshift({ type: 'equal', text: expLines[i - 1], expNum: i, actNum: j });
+            i--;
+            j--;
+          } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+            diff.unshift({ type: 'add', text: actLines[j - 1], actNum: j });
+            j--;
+          } else if (i > 0) {
+            diff.unshift({ type: 'remove', text: expLines[i - 1], expNum: i });
+            i--;
+          }
+        }
+      } else {
+        const maxLen = Math.max(m, n);
+        for (let k = 0; k < maxLen; k++) {
+          if (k < m && k < n && expLines[k] === actLines[k]) {
+            diff.push({ type: 'equal', text: expLines[k], expNum: k + 1, actNum: k + 1 });
+          } else {
+            if (k < m) diff.push({ type: 'remove', text: expLines[k], expNum: k + 1 });
+            if (k < n) diff.push({ type: 'add', text: actLines[k], actNum: k + 1 });
+          }
+        }
+      }
+
+      const diffCount = diff.filter(d => d.type !== 'equal').length;
+      let html = '<div class="diff-container">';
+      html += '<div class="diff-header"><span><strong>差异对比 (Diff):</strong> ' + (diffCount > 0 ? ('共 ' + diffCount + ' 行不匹配') : '内容一致') + '</span><span style="font-size:10px;"><span style="color:#f14c4c;font-weight:bold;">- 期望</span> / <span style="color:#4ec9b0;font-weight:bold;">+ 实际</span></span></div>';
+      html += '<div class="diff-body">';
+
+      diff.forEach(item => {
+        const lineNum = item.actNum !== undefined ? item.actNum : item.expNum;
+        if (item.type === 'equal') {
+          html += '<div class="diff-row diff-row-equal"><span class="diff-ln">' + lineNum + '</span><span class="diff-sign"> </span><span class="diff-txt">' + escapeHtml(item.text) + '</span></div>';
+        } else if (item.type === 'add') {
+          html += '<div class="diff-row diff-row-add"><span class="diff-ln">' + (item.actNum || '') + '</span><span class="diff-sign">+</span><span class="diff-txt">' + escapeHtml(item.text) + '</span></div>';
+        } else if (item.type === 'remove') {
+          html += '<div class="diff-row diff-row-remove"><span class="diff-ln">' + (item.expNum || '') + '</span><span class="diff-sign">-</span><span class="diff-txt">' + escapeHtml(item.text) + '</span></div>';
+        }
+      });
+
+      html += '</div></div>';
+      return html;
+    }
+
     // Detail modal helpers
     window.showCeDetail = function(compiler) {
       const modal = document.getElementById('detailModal');
@@ -1298,6 +1437,33 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       modal.style.display = 'block';
     };
 
+    window.adoptStdout = function(caseId) {
+      const tc = state.testCases.find(c => c.id === caseId);
+      if (!tc || !state.lastRunResult) return;
+      let outVal = null;
+      ['msvc', 'mingw', 'linux'].forEach(comp => {
+        const run = (state.lastRunResult.runs[comp] || []).find(r => r.testCaseId === caseId);
+        if (run && run.stdout !== undefined && outVal === null) {
+          outVal = run.stdout;
+        }
+      });
+      if (outVal !== null) {
+        tc.expectedOutput = outVal;
+        vscode.postMessage({ type: 'updateTestCases', testCases: state.testCases });
+        renderCases();
+        document.getElementById('detailModal').style.display = 'none';
+        setProgressText('已将实际输出设为该点期望输出！', 3000);
+      }
+    };
+
+    window.copyToClipboard = function(text) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => {
+          setProgressText('已复制到剪贴板！', 2000);
+        }).catch(() => {});
+      }
+    };
+
     window.showRunDetail = function(compiler, caseId) {
       const modal = document.getElementById('detailModal');
       const title = document.getElementById('modalTitle');
@@ -1308,19 +1474,69 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       if (!run) return;
       title.textContent = (tc ? tc.name : caseId) + ' - ' + compiler.toUpperCase() + ' 详情 (' + run.status + ')';
 
-      let html = '<div style="margin-bottom: 6px;">耗时: ' + run.timeMs + 'ms | 退出码: ' + run.exitCode + '</div>';
-      if (run.byteDiff && !run.byteDiff.matched) {
-        html += '<div style="color: #f14c4c; font-weight: bold; margin-bottom: 4px;">' + escapeHtml(run.byteDiff.message) + '</div>';
-        html += '<div style="font-size: 10px; margin-bottom: 2px;">期望上下文:</div>';
-        html += '<div class="diff-block" style="color: #4ec9b0;">' + escapeHtml(run.byteDiff.expectedContext || '') + '</div>';
-        html += '<div style="font-size: 10px; margin: 4px 0 2px 0;">实际得到上下文:</div>';
-        html += '<div class="diff-block">' + escapeHtml(run.byteDiff.actualContext || '') + '</div>';
+      let html = '<div style="margin-bottom: 6px; font-size: 11px; color: #aaa;">耗时: ' + run.timeMs + 'ms | 退出码: ' + run.exitCode + '</div>';
+
+      if (run.status === 'RUN') {
+        html += '<div style="background: rgba(0, 122, 204, 0.15); border: 1px solid #007acc; padding: 6px; border-radius: 4px; margin-bottom: 8px; color: #569cd6; font-size: 11px;">';
+        html += 'ℹ️ 本测试点未设置期望输出，程序正常执行完成，仅给出实际输出 (stdout)。';
+        html += '</div>';
+        html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 3px;">';
+        html += '<strong style="color: #4ec9b0; font-size: 11px;">程序实际输出 (stdout):</strong>';
+        html += '<div style="display:flex; gap:4px;">';
+        html += '<button id="btnModalAdopt" class="btn btn-small">📋 设为期望输出</button>';
+        html += '<button id="btnModalCopy" class="btn btn-small btn-secondary">复制</button>';
+        html += '</div>';
+        html += '</div>';
+        html += '<div class="diff-block" style="color: #eee; max-height: 240px; overflow-y: auto;">' + escapeHtml(run.stdout || '(无输出)') + '</div>';
+      } else if (run.status === 'WA') {
+        const expText = tc ? tc.expectedOutput : (run.byteDiff && run.byteDiff.expectedContext) || '';
+        const actText = run.stdout !== undefined ? run.stdout : (run.byteDiff && run.byteDiff.actualContext) || '';
+
+        // 1. Visual Line Diff
+        html += generateLineDiffHtml(expText, actText);
+
+        // 2. Full Actual Output (完整的实际输出，绝不截断！)
+        html += '<div style="margin-top: 8px;">';
+        html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 3px;">';
+        html += '<strong style="color: #4ec9b0; font-size: 11px;">完整实际输出 (stdout):</strong>';
+        html += '<button id="btnModalCopy" class="btn btn-small btn-secondary">复制输出</button>';
+        html += '</div>';
+        html += '<div class="diff-block" style="color: #eee; max-height: 160px; overflow-y: auto;">' + escapeHtml(run.stdout || '(无输出)') + '</div>';
+        html += '</div>';
+
+        // 3. Full Expected Output
+        html += '<div style="margin-top: 6px;">';
+        html += '<div style="font-size: 11px; color: #aaa; margin-bottom: 3px;"><strong>完整期望输出:</strong></div>';
+        html += '<div class="diff-block" style="color: #bbb; max-height: 120px; overflow-y: auto;">' + escapeHtml((tc ? tc.expectedOutput : '') || '(无)') + '</div>';
+        html += '</div>';
+
+        // 4. 底层字节详情（折叠隐藏，避免又臭又长）
+        if (run.byteDiff && run.byteDiff.message) {
+          html += '<details style="margin-top: 8px; font-size: 10px; color: #888;">';
+          html += '<summary style="cursor: pointer;">底层字节偏移数据</summary>';
+          html += '<div style="margin-top: 4px; padding: 4px; background: rgba(0,0,0,0.3); border-radius: 3px; color: #aaa;">' + escapeHtml(run.byteDiff.message) + '</div>';
+          html += '</details>';
+        }
+      } else if (run.status === 'AC') {
+        html += '<div style="color: #4ec9b0; font-weight: bold; margin-bottom: 6px;">✅ 测试通过，输出与标准答案一致。</div>';
+        html += '<div style="font-size: 11px; color: #aaa; margin-bottom: 3px;"><strong>实际输出 (stdout):</strong></div>';
+        html += '<div class="diff-block" style="color: #eee; max-height: 180px; overflow-y: auto;">' + escapeHtml(run.stdout || '(无输出)') + '</div>';
       }
+
       if (run.stderr) {
-        html += '<div style="font-size: 10px; color:#aaa; margin-top: 4px;">标准错误 (stderr):</div>';
-        html += '<div class="diff-block" style="color:#e2a03f;">' + escapeHtml(run.stderr) + '</div>';
+        html += '<div style="font-size: 10px; color:#aaa; margin-top: 6px;">标准错误 (stderr):</div>';
+        html += '<div class="diff-block" style="color:#e2a03f; max-height: 120px; overflow-y: auto;">' + escapeHtml(run.stderr) + '</div>';
       }
+
       content.innerHTML = html;
+      const btnAdopt = document.getElementById('btnModalAdopt');
+      if (btnAdopt) {
+        btnAdopt.onclick = () => window.adoptStdout(caseId);
+      }
+      const btnCopy = document.getElementById('btnModalCopy');
+      if (btnCopy) {
+        btnCopy.onclick = () => window.copyToClipboard(run.stdout || '');
+      }
       modal.style.display = 'block';
     };
 

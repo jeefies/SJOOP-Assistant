@@ -261,6 +261,19 @@ export class MsvcDriver {
           });
         }
 
+        const hasExpected = typeof testCase.expectedOutput === 'string' && testCase.expectedOutput.trim() !== '';
+        if (!hasExpected) {
+          return resolve({
+            testCaseId: testCase.id,
+            compiler: 'msvc',
+            status: 'RUN',
+            timeMs,
+            exitCode: 0,
+            stdout: stdoutStr,
+            stderr: stderrStr,
+          });
+        }
+
         const diff = compareBytesStrict(actualBytes, expectedBytes, 'gb18030', normalizeNewlines, stripTrailingNewlines);
         resolve({
           testCaseId: testCase.id,
