@@ -234,6 +234,41 @@ describe('SJOOP Core Modules Test Suite', () => {
       assert.ok(fs.existsSync(gpp!));
     });
 
+    it('should check MinGW g++ version and report expected signature', () => {
+      const ver = MingwDriver.checkGppVersion();
+      assert.strictEqual(typeof ver.valid, 'boolean');
+      assert.strictEqual(typeof ver.isExpectedVersion, 'boolean');
+      assert.ok(ver.expectedSignature.includes('15.2.0'));
+      assert.ok(ver.expectedSignature.includes('Brecht Sanders, r6'));
+      assert.ok(ver.versionLine.length > 0);
+    });
+
+    it('should handle non-existent g++ path gracefully in checkGppVersion', () => {
+      const ver = MingwDriver.checkGppVersion('C:\\non_existent_path\\g++.exe');
+      assert.strictEqual(ver.valid, false);
+      assert.strictEqual(ver.isExpectedVersion, false);
+      assert.strictEqual(ver.path, null);
+    });
+
+    it('should resolve g++ executable from bin directory path and quoted paths', () => {
+      const gpp = MingwDriver.findGpp();
+      if (gpp) {
+        const binDir = path.dirname(gpp);
+        const resolvedFromDir = MingwDriver.resolveGppPath(binDir);
+        assert.ok(resolvedFromDir !== null);
+        assert.strictEqual(path.resolve(resolvedFromDir!), path.resolve(gpp));
+
+        const quoted = `"${binDir}"`;
+        const resolvedFromQuoted = MingwDriver.resolveGppPath(quoted);
+        assert.ok(resolvedFromQuoted !== null);
+        assert.strictEqual(path.resolve(resolvedFromQuoted!), path.resolve(gpp));
+
+        const ver = MingwDriver.checkGppVersion(binDir);
+        assert.strictEqual(ver.valid, true);
+        assert.ok(ver.path !== null);
+      }
+    });
+
     it('should compile and run a GB18030 C++ file using MSVC', async () => {
       if (process.platform !== 'win32') return;
       const cppFile = path.join(tmpDir, 'test_msvc.cpp');

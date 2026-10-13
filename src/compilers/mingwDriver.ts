@@ -5,8 +5,47 @@ import * as iconv from 'iconv-lite';
 import { CompileResult, SingleRunResult, TestCase } from '../types';
 import { compareBytesStrict } from '../judge/byteJudge';
 
+export interface GppVersionInfo {
+  path: string | null;
+  valid: boolean;
+  versionLine: string;
+  isExpectedVersion: boolean;
+  expectedSignature: string;
+}
+
+export const EXPECTED_GCC_SIGNATURE = 'gcc version 15.2.0 (MinGW-W64 x86_64-ucrt-posix-seh, built by Brecht Sanders, r6)';
+
 export class MingwDriver {
+  public static readonly EXPECTED_GCC_SIGNATURE = EXPECTED_GCC_SIGNATURE;
   private static cachedGppPath: string | null = null;
+
+  public static resolveGppPath(targetPath?: string | null): string | null {
+    if (!targetPath) return null;
+    let trimmed = targetPath.trim();
+    if (!trimmed) return null;
+    trimmed = trimmed.replace(/^["'](.*)["']$/, '$1').trim();
+
+    if (!fs.existsSync(trimmed)) {
+      if (fs.existsSync(trimmed + '.exe')) {
+        return trimmed + '.exe';
+      }
+      return null;
+    }
+
+    try {
+      const stat = fs.statSync(trimmed);
+      if (stat.isDirectory()) {
+        const cand1 = path.join(trimmed, 'g++.exe');
+        if (fs.existsSync(cand1)) return cand1;
+        const cand2 = path.join(trimmed, 'bin', 'g++.exe');
+        if (fs.existsSync(cand2)) return cand2;
+        return null;
+      }
+      return trimmed;
+    } catch {
+      return null;
+    }
+  }
 
   public static findGpp(): string | null {
     if (this.cachedGppPath && fs.existsSync(this.cachedGppPath)) {
@@ -16,39 +55,143 @@ export class MingwDriver {
     const localAppData = process.env.LOCALAPPDATA || '';
     const progFiles = process.env.ProgramFiles || 'C:\\Program Files';
     const progFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+    const userProfile = process.env.USERPROFILE || '';
 
     // Candidate directories for RedPanda-CPP and typical MinGW setups
     const candidates = [
+      ...(userProfile
+        ? [
+            path.join(
+              userProfile,
+              'Documents',
+              'OI',
+              'ProgramDesign',
+              'SBSJ',
+              '25262-000002-W0000.开学大礼包',
+              'RedPanda-CPP',
+              'mingw64',
+              'bin',
+              'g++.exe'
+            ),
+          ]
+        : []),
       path.join(progFiles, 'RedPanda-CPP', 'mingw64', 'bin', 'g++.exe'),
       path.join(progFilesX86, 'RedPanda-CPP', 'mingw64', 'bin', 'g++.exe'),
       path.join(localAppData, 'Programs', 'RedPanda-CPP', 'mingw64', 'bin', 'g++.exe'),
       'C:\\RedPanda-CPP\\mingw64\\bin\\g++.exe',
       'D:\\RedPanda-CPP\\mingw64\\bin\\g++.exe',
+      'C:\\winlibs\\bin\\g++.exe',
+      'D:\\winlibs\\bin\\g++.exe',
       'C:\\mingw64\\bin\\g++.exe',
       'C:\\TDM-GCC-64\\bin\\g++.exe',
     ];
 
-    for (const cand of candidates) {
-      if (fs.existsSync(cand)) {
-        this.cachedGppPath = cand;
-        return cand;
-      }
-    }
+    const foundCandidates = candidates.filter((cand) => fs.existsSync(cand));
 
     // Check system PATH
     try {
       const tool = process.platform === 'win32' ? 'where.exe' : 'which';
       const out = cp.execFileSync(tool, ['g++'], { encoding: 'utf-8', timeout: 3000 }).trim();
-      const firstLine = out.split(/\r?\n/)[0];
-      if (firstLine && fs.existsSync(firstLine)) {
-        this.cachedGppPath = firstLine;
-        return firstLine;
+      const lines = out.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && fs.existsSync(l));
+      for (const line of lines) {
+        if (!foundCandidates.includes(line)) {
+          foundCandidates.push(line);
+        }
       }
     } catch {
       // ignore
     }
 
+    // Prefer compiler matching expected GCC 15.2.0 version
+    for (const cand of foundCandidates) {
+      try {
+        const res = cp.spawnSync(cand, ['-v'], { encoding: 'utf-8', timeout: 3000 });
+        const out = ((res.stdout || '') + '\n' + (res.stderr || '')).toLowerCase();
+        if (out.includes('15.2.0') && out.includes('brecht sanders') && out.includes('ucrt') && out.includes('r6')) {
+          this.cachedGppPath = cand;
+          return cand;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (foundCandidates.length > 0) {
+      this.cachedGppPath = foundCandidates[0];
+      return foundCandidates[0];
+    }
+
     return null;
+  }
+
+  public static checkGppVersion(customGppPath?: string): GppVersionInfo {
+    const trimmedCustom = customGppPath?.trim();
+    let gpp: string | null = null;
+
+    if (trimmedCustom) {
+      gpp = this.resolveGppPath(trimmedCustom);
+      if (!gpp) {
+        return {
+          path: null,
+          valid: false,
+          versionLine: `指定的路径未找到 g++ 编译器: ${trimmedCustom}`,
+          isExpectedVersion: false,
+          expectedSignature: EXPECTED_GCC_SIGNATURE,
+        };
+      }
+    } else {
+      gpp = this.findGpp();
+    }
+
+    if (!gpp || !fs.existsSync(gpp)) {
+      return {
+        path: null,
+        valid: false,
+        versionLine: '未找到 g++ 编译器',
+        isExpectedVersion: false,
+        expectedSignature: EXPECTED_GCC_SIGNATURE,
+      };
+    }
+
+    try {
+      const res = cp.spawnSync(gpp, ['-v'], { encoding: 'utf-8', timeout: 5000 });
+      const full = ((res.stdout || '') + '\n' + (res.stderr || '')).trim();
+
+      const lines = full.split(/\r?\n/);
+      let versionLine = '';
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (/gcc\s+(version|版本)/i.test(line)) {
+          versionLine = line;
+          break;
+        }
+      }
+      if (!versionLine && lines.length > 0) {
+        versionLine = lines[lines.length - 1].trim();
+      }
+
+      const lower = full.toLowerCase();
+      const isExpected = lower.includes('15.2.0') &&
+        lower.includes('brecht sanders') &&
+        lower.includes('ucrt') &&
+        lower.includes('r6');
+
+      return {
+        path: gpp,
+        valid: true,
+        versionLine: versionLine || '未知版本',
+        isExpectedVersion: isExpected,
+        expectedSignature: EXPECTED_GCC_SIGNATURE,
+      };
+    } catch (err: any) {
+      return {
+        path: gpp,
+        valid: false,
+        versionLine: `获取版本失败: ${err.message}`,
+        isExpectedVersion: false,
+        expectedSignature: EXPECTED_GCC_SIGNATURE,
+      };
+    }
   }
 
   public static compile(
@@ -60,14 +203,23 @@ export class MingwDriver {
   ): Promise<CompileResult> {
     return new Promise((resolve) => {
       const startTime = Date.now();
-      const gpp = customGppPath && fs.existsSync(customGppPath) ? customGppPath : this.findGpp();
+      const resolvedCustom = customGppPath ? this.resolveGppPath(customGppPath) : null;
+      if (customGppPath && !resolvedCustom) {
+        return resolve({
+          compiler: 'mingw',
+          success: false,
+          timeMs: Date.now() - startTime,
+          errorMessage: `未能找到指定的 MinGW g++ 路径: ${customGppPath}。请检查路径设置（支持输入 bin 目录或 g++.exe 完整路径）。`,
+        });
+      }
+      const gpp = resolvedCustom || this.findGpp();
 
       if (!gpp) {
         return resolve({
           compiler: 'mingw',
           success: false,
           timeMs: Date.now() - startTime,
-          errorMessage: '未能找到 MinGW g++ 编译器 (RedPanda-CPP)。请在设置中手动指定 g++.exe 路径。',
+          errorMessage: '未能找到 MinGW g++ 编译器 (RedPanda-CPP)。请在设置中手动指定 g++.exe 或 bin 目录路径。',
         });
       }
 

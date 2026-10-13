@@ -117,19 +117,11 @@ export function activate(context: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand('sjoop.convertToGB18030', async () => {
+      await provider.handleConvertEncoding();
       const editor = vscode.window.activeTextEditor;
-      if (!editor || editor.document.uri.scheme !== 'file') {
-        vscode.window.showErrorMessage('请在编辑器中打开一个本地源文件！');
-        return;
+      if (editor) {
+        updateActiveEditor(editor);
       }
-      await editor.document.save();
-      const res = convertFileToGB18030(editor.document.fileName);
-      if (res.success) {
-        vscode.window.showInformationMessage(res.message);
-      } else {
-        vscode.window.showErrorMessage(res.message);
-      }
-      updateActiveEditor(editor);
     }),
 
     vscode.commands.registerCommand('sjoop.openSettings', () => {

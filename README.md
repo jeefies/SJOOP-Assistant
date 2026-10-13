@@ -52,7 +52,7 @@
 | `sjoop.msvc.vcvarsPath` | `""` | 手动指定 `vcvars64.bat` 或 `vcvarsall.bat` |
 | `sjoop.msvc.flags` | 见 package.json | MSVC 编译参数 |
 | `sjoop.mingw.autoDetect` | `true` | 是否自动探测 RedPanda g++ |
-| `sjoop.mingw.gppPath` | `""` | 手动指定 `g++.exe` 路径 |
+| `sjoop.mingw.gppPath` | `""` | 手动指定 `g++.exe` 或 `bin` 目录路径（例如 `.../RedPanda-CPP/mingw64/bin`） |
 | `sjoop.mingw.flags` | `["-Wall", "-std=c++20", ...]` | MinGW 编译参数 |
 | `sjoop.linux.host` | `"10.80.42.230"` | Linux 服务器 IP |
 | `sjoop.linux.port` | `22` | Linux SSH 端口 |

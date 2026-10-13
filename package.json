@@ -130,7 +130,7 @@
         "sjoop.mingw.gppPath": {
           "type": "string",
           "default": "",
-          "description": "手动指定的 MinGW g++.exe 路径（为空时自动探测）"
+          "description": "手动指定的 MinGW g++.exe 或 bin 目录路径（为空时自动探测）。支持输入文件夹或可执行文件完整路径，例如输入：C:\\Users\\jeefy\\Documents\\OI\\ProgramDesign\\SBSJ\\25262-000002-W0000.开学大礼包\\RedPanda-CPP\\mingw64\\bin（或直接指向 g++.exe）"
         },
         "sjoop.mingw.flags": {
           "type": "array",

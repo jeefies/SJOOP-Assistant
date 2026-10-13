@@ -55,6 +55,9 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         case 'convertEncoding':
           await this.handleConvertEncoding();
           break;
+        case 'configMingw':
+          await this.handleConfigMingw();
+          break;
         case 'createProject':
           await this.handleCreateProject();
           break;
@@ -240,6 +243,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
 
     const msvcPath = config.get<string>('msvc.vcvarsPath') || MsvcDriver.findVcvars();
     const mingwPath = config.get<string>('mingw.gppPath') || MingwDriver.findGpp();
+    const mingwInfo = MingwDriver.checkGppVersion(config.get<string>('mingw.gppPath'));
     const studentId = config.get<string>('studentId', '');
     const sshKeyPath = config.get<string>('linux.privateKeyPath') || LinuxSshDriver.findDefaultPrivateKey();
     const normalizeNewlines = config.get<boolean>('judge.normalizeNewlines', true);
@@ -263,21 +267,164 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         studentId,
         sshKeyPath,
       },
+      mingwInfo: {
+        path: mingwInfo.path,
+        valid: mingwInfo.valid,
+        versionLine: mingwInfo.versionLine,
+        isExpectedVersion: mingwInfo.isExpectedVersion,
+      },
       projectConfig: this.currentProjectConfig,
       testCases: this.currentTestCases,
       lastRunResult: this.lastRunResult,
     });
   }
 
-  private async handleConvertEncoding() {
+  public async handleConvertEncoding() {
     const fileToConvert = this.activeEditorPath || this.currentFilePath || this.currentProjectConfig.mainFile;
     if (!fileToConvert || !fs.existsSync(fileToConvert)) return;
+
+    const encCheck = checkFileEncoding(fileToConvert);
+    if (encCheck.isTargetEncoding) {
+      vscode.window.showInformationMessage(`当前文件已经是 ${encCheck.encoding.toUpperCase()} 编码，无需转换。`);
+      return;
+    }
+
+    // 授权将文件修改编码
+    const auth = await vscode.window.showWarningMessage(
+      `当前文件 (${path.basename(fileToConvert)}) 检测为 ${encCheck.encoding.toUpperCase()} 编码，非 GBK/GB18030。\n\n是否授权将其转换为 GB18030 并在编辑器中以 GB18030 编码重新打开？`,
+      { modal: true },
+      '授权并转换',
+      '取消'
+    );
+    if (auth !== '授权并转换') return;
+
+    // 1. 若当前活跃编辑器打开了此文件且有未保存改动，先保存
+    const activeEditor = vscode.window.activeTextEditor;
+    if (activeEditor && activeEditor.document.fileName === fileToConvert && activeEditor.document.isDirty) {
+      await activeEditor.document.save();
+    }
+
+    // 2. 将文件修改编码为 GB18030
     const res = convertFileToGB18030(fileToConvert);
-    if (res.success) {
-      vscode.window.showInformationMessage(res.message);
+    if (!res.success) {
+      vscode.window.showErrorMessage(`转换失败: ${res.message}`);
+      return;
+    }
+
+    // 3. 通过 GB18030/GBK 编码重新打开文件 (Reopen With Encoding gb18030)
+    const docUri = vscode.Uri.file(fileToConvert);
+    try {
+      const filesConfig = vscode.workspace.getConfiguration('files', docUri);
+      const target = (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0)
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
+      await filesConfig.update('encoding', 'gb18030', target);
+
+      // 关闭当前打开的旧编码编辑器并以 GB18030 重新打开
+      if (activeEditor && activeEditor.document.fileName === fileToConvert) {
+        await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+      }
+      const newDoc = await vscode.workspace.openTextDocument(docUri);
+      await vscode.window.showTextDocument(newDoc, { preview: false });
+    } catch {
+      try {
+        await vscode.commands.executeCommand('workbench.action.editor.reopenWithEncoding');
+      } catch (_) {}
+    }
+
+    vscode.window.showInformationMessage(`文件 "${path.basename(fileToConvert)}" 已成功转换为 GB18030，并以 GB18030 编码重新打开！`);
+    this.refreshState();
+  }
+
+  public async handleConfigMingw(): Promise<void> {
+    const current = vscode.workspace.getConfiguration('sjoop').get<string>('mingw.gppPath') || '';
+    const mode = await vscode.window.showQuickPick(
+      [
+        {
+          label: '$(edit) 手动输入路径',
+          description: '支持输入 bin 目录或 g++.exe 完整路径',
+          detail: '例如: C:\\Users\\jeefy\\Documents\\OI\\ProgramDesign\\SBSJ\\25262-000002-W0000.开学大礼包\\RedPanda-CPP\\mingw64\\bin',
+          action: 'input',
+        },
+        {
+          label: '$(folder) 浏览选择 MinGW bin 目录',
+          description: '选择包含 g++.exe 的文件夹',
+          detail: '例如: ...\\RedPanda-CPP\\mingw64\\bin',
+          action: 'folder',
+        },
+        {
+          label: '$(file-binary) 浏览选择 g++.exe 文件',
+          description: '直接定位选择 g++.exe 文件',
+          detail: '例如: ...\\bin\\g++.exe',
+          action: 'file',
+        },
+      ],
+      {
+        placeHolder: '请选择 MinGW g++ 编译器路径的配置方式',
+        title: '配置 MinGW GCC 15.2.0 (Brecht Sanders, r6)',
+      }
+    );
+
+    if (!mode) return;
+
+    let chosenPath: string | null = null;
+
+    if (mode.action === 'input') {
+      const input = await vscode.window.showInputBox({
+        title: '输入 MinGW g++.exe 或 bin 目录路径',
+        prompt: '请输入 MinGW g++.exe 路径或 bin 目录路径（例如输入 C:\\Users\\jeefy\\Documents\\OI\\ProgramDesign\\SBSJ\\25262-000002-W0000.开学大礼包\\RedPanda-CPP\\mingw64\\bin）',
+        value: current,
+        placeHolder: 'C:\\Users\\jeefy\\Documents\\OI\\ProgramDesign\\SBSJ\\25262-000002-W0000.开学大礼包\\RedPanda-CPP\\mingw64\\bin',
+        ignoreFocusOut: true,
+      });
+      if (input && input.trim()) {
+        chosenPath = input.trim();
+      }
+    } else if (mode.action === 'folder') {
+      const sel = await vscode.window.showOpenDialog({
+        canSelectFiles: false,
+        canSelectFolders: true,
+        canSelectMany: false,
+        openLabel: '选择 bin 目录',
+        title: '选择 MinGW bin 目录 (例如 RedPanda-CPP/mingw64/bin)',
+      });
+      if (sel && sel[0]) {
+        chosenPath = sel[0].fsPath;
+      }
+    } else if (mode.action === 'file') {
+      const sel = await vscode.window.showOpenDialog({
+        canSelectFiles: true,
+        canSelectFolders: false,
+        canSelectMany: false,
+        openLabel: '选择 g++.exe',
+        filters: { Executable: ['exe'] },
+        title: '手动指定 MinGW GCC 15.2.0 (Brecht Sanders, r6) 的 g++.exe',
+      });
+      if (sel && sel[0]) {
+        chosenPath = sel[0].fsPath;
+      }
+    }
+
+    if (chosenPath) {
+      const resolved = MingwDriver.resolveGppPath(chosenPath);
+      const targetToCheck = resolved || chosenPath;
+      const ver = MingwDriver.checkGppVersion(targetToCheck);
+      if (ver.isExpectedVersion) {
+        await vscode.workspace.getConfiguration('sjoop').update('mingw.gppPath', chosenPath, vscode.ConfigurationTarget.Global);
+        vscode.window.showInformationMessage(`MinGW g++ 已成功配置为 15.2.0: ${chosenPath}`);
+      } else {
+        const choice = await vscode.window.showWarningMessage(
+          `所选编译器版本为: "${ver.versionLine}"，非要求的 "${MingwDriver.EXPECTED_GCC_SIGNATURE}"。\n是否仍要使用该路径？`,
+          '仍然使用',
+          '重新选择'
+        );
+        if (choice === '仍然使用') {
+          await vscode.workspace.getConfiguration('sjoop').update('mingw.gppPath', chosenPath, vscode.ConfigurationTarget.Global);
+        } else if (choice === '重新选择') {
+          return this.handleConfigMingw();
+        }
+      }
       this.refreshState();
-    } else {
-      vscode.window.showErrorMessage(res.message);
     }
   }
 
@@ -518,7 +665,21 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     // Check compilers
     const activeCompilers: CompilerType[] = [];
     if (this.selectedCompilers.msvc) activeCompilers.push('msvc');
-    if (this.selectedCompilers.mingw) activeCompilers.push('mingw');
+    if (this.selectedCompilers.mingw) {
+      const mingwCheck = MingwDriver.checkGppVersion(config.get<string>('mingw.gppPath'));
+      if (!mingwCheck.isExpectedVersion) {
+        const proceed = await vscode.window.showWarningMessage(
+          `当前检测到的 MinGW g++ 版本 (${mingwCheck.versionLine}) 与课程要求的 "gcc version 15.2.0 (MinGW-W64 x86_64-ucrt-posix-seh, built by Brecht Sanders, r6)" 不一致！\n请手动设置正确的 g++.exe 路径。`,
+          '手动设置',
+          '仍然运行'
+        );
+        if (proceed === '手动设置') {
+          await this.handleConfigMingw();
+          return;
+        }
+      }
+      activeCompilers.push('mingw');
+    }
     if (this.selectedCompilers.linux) {
       if (!studentId) {
         const msg = '请输入学号！(使用 Linux 远程编译必须配置学号)';
@@ -726,7 +887,8 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       color: var(--vscode-input-foreground, #cccccc);
       border: 1px solid var(--border);
       border-radius: 3px;
-      font-family: var(--vscode-editor-font-family, monospace);
+      font-family: 'Cascadia Code', 'Ubuntu Mono', var(--vscode-editor-font-family, monospace), monospace;
+      font-feature-settings: "liga" 0;
       font-size: 11px;
       line-height: 1.4;
       box-sizing: border-box;
@@ -774,7 +936,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       border-radius: 4px;
       white-space: pre-wrap;
       word-break: break-all;
-      font-family: monospace;
+      font-family: 'Cascadia Code', 'Ubuntu Mono', var(--vscode-editor-font-family, monospace), monospace;
       color: #e51400;
     }
     .diff-container {
@@ -782,7 +944,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       border: 1px solid var(--border);
       border-radius: 4px;
       overflow: hidden;
-      font-family: var(--vscode-editor-font-family, monospace);
+      font-family: 'Cascadia Code', 'Ubuntu Mono', var(--vscode-editor-font-family, monospace), monospace;
       font-size: 11px;
     }
     .diff-header {
@@ -805,6 +967,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       white-space: pre-wrap;
       word-break: break-all;
       line-height: 1.4;
+      font-family: 'Cascadia Code', 'Ubuntu Mono', var(--vscode-editor-font-family, monospace), monospace;
     }
     .diff-row-equal { color: #888; }
     .diff-row-add { background: rgba(56, 138, 52, 0.22); color: #4ec9b0; }
@@ -893,7 +1056,10 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         <input type="checkbox" id="chkMingw" checked>
         <strong>MinGW g++</strong> (小熊猫/GCC 15.2)
       </label>
-      <span style="font-size: 10px; color: #4ec9b0;" id="mingwStatus">就绪</span>
+      <span style="font-size: 10px; display: inline-flex; align-items: center; gap: 4px;">
+        <span style="color: #4ec9b0;" id="mingwStatus">就绪</span>
+        <button class="btn btn-small btn-secondary" id="btnConfigMingw" style="display:none; padding: 1px 5px; font-size: 10px;">⚙️ 手动设置</button>
+      </span>
     </div>
     <div class="compiler-item">
       <label class="toggle-label">
@@ -922,9 +1088,9 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
   <button class="btn btn-full" id="btnRunBatch">🚀 编译并运行测试</button>
   <div id="progressText" style="font-size: 11px; color: #4ec9b0; text-align: center; margin: 6px 0; min-height: 16px;"></div>
 
-  <!-- Test Results Matrix -->
+  <!-- Test Results -->
   <div class="card" id="resultCard" style="display: none;">
-    <strong>测试结果矩阵</strong>
+    <strong>测试结果</strong>
     <table class="table-res" id="resultTable">
       <thead>
         <tr>
@@ -1189,6 +1355,31 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
       document.getElementById('chkMingw').checked = !!state.compilers.mingw;
       document.getElementById('chkLinux').checked = !!state.compilers.linux;
 
+      const mingwStatusEl = document.getElementById('mingwStatus');
+      const btnCfgMingwEl = document.getElementById('btnConfigMingw');
+      if (state.mingwInfo && mingwStatusEl) {
+        if (state.mingwInfo.isExpectedVersion) {
+          mingwStatusEl.textContent = '✅ 15.2.0 就绪';
+          mingwStatusEl.style.color = '#4ec9b0';
+          mingwStatusEl.title = state.mingwInfo.versionLine || 'gcc version 15.2.0 (Brecht Sanders, r6)';
+          if (btnCfgMingwEl) {
+            btnCfgMingwEl.style.display = 'inline-block';
+            btnCfgMingwEl.textContent = '⚙️';
+            btnCfgMingwEl.title = '手动重新指定 MinGW 路径';
+          }
+        } else {
+          const shortVer = state.mingwInfo.versionLine ? (state.mingwInfo.versionLine.length > 18 ? state.mingwInfo.versionLine.slice(0, 18) + '...' : state.mingwInfo.versionLine) : '未检测到';
+          mingwStatusEl.textContent = '⚠️ ' + shortVer;
+          mingwStatusEl.style.color = '#e2a03f';
+          mingwStatusEl.title = '当前检测版本: ' + (state.mingwInfo.versionLine || '未知') + '\\n要求版本: gcc version 15.2.0 (MinGW-W64 x86_64-ucrt-posix-seh, built by Brecht Sanders, r6)';
+          if (btnCfgMingwEl) {
+            btnCfgMingwEl.style.display = 'inline-block';
+            btnCfgMingwEl.textContent = '⚙️ 手动设置';
+            btnCfgMingwEl.title = '检测到版本不匹配，点击手动配置路径';
+          }
+        }
+      }
+
       // Student ID
       const sidInput = document.getElementById('txtStudentId');
       if (state.compilerPaths && state.compilerPaths.studentId !== undefined) {
@@ -1352,7 +1543,7 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
         body.appendChild(tr);
       });
 
-      // 当判定不为 AC 时（出现 CE, WA, TLE, RE 等非 AC 状态），测试结果矩阵直接展开异常详情
+      // 当判定不为 AC 时（出现 CE, WA, TLE, RE 等非 AC 状态），测试结果直接展开异常详情
       let firstNonAc = null;
       // 1. 优先检查编译器是否有 CE (编译错误)
       for (const comp of ['msvc', 'mingw', 'linux']) {
@@ -1643,6 +1834,11 @@ export class SidebarWebviewProvider implements vscode.WebviewViewProvider {
     document.getElementById('chkMsvc').onchange = updateCompilers;
     document.getElementById('chkMingw').onchange = updateCompilers;
     document.getElementById('chkLinux').onchange = updateCompilers;
+
+    const btnCfgMingw = document.getElementById('btnConfigMingw');
+    if (btnCfgMingw) {
+      btnCfgMingw.onclick = () => vscode.postMessage({ type: 'configMingw' });
+    }
 
     const txtSid = document.getElementById('txtStudentId');
     txtSid.oninput = (e) => {
